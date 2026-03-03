@@ -1,0 +1,32 @@
+# Local tooling
+.trae/
+.venv/
+venv/
+
+# Python cache and build outputs
+**/__pycache__/
+*.py[cod]
+backend/build/
+backend/dist/
+
+# Runtime database files
+backend/instance/*.db
+backend/instance/*.sqlite
+backend/instance/*.sqlite3
+
+# Frontend dependencies and build outputs
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Packaged releases
+release/
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp
+
+# OS metadata
+.DS_Store
+Thumbs.db
