@@ -129,6 +129,40 @@ const selectedMaterialHint = computed(() => {
   return `${selectedMaterial.value.name}（${selectedMaterial.value.id}）`
 })
 
+const pageSizeOptions = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
+
+const materialTotalPages = computed(() => {
+  const fallback = Math.ceil((pagination.total || 0) / (pagination.page_size || 1)) || 1
+  return Math.max(1, Number(pagination.total_pages) || fallback)
+})
+
+const ledgerTotalPages = computed(() => {
+  const fallback = Math.ceil((ledgerPagination.total || 0) / (ledgerPagination.page_size || 1)) || 1
+  return Math.max(1, Number(ledgerPagination.total_pages) || fallback)
+})
+
+function buildVisiblePages(currentPage, totalPages) {
+  const pages = []
+  for (let page = 1; page <= totalPages; page += 1) {
+    const shouldShow = page === 1 || page === totalPages || Math.abs(page - currentPage) <= 1
+    if (shouldShow) {
+      pages.push(page)
+    } else if (pages[pages.length - 1] !== '...') {
+      pages.push('...')
+    }
+  }
+  return pages
+}
+
+const materialVisiblePages = computed(() => buildVisiblePages(pagination.page, materialTotalPages.value))
+const ledgerVisiblePages = computed(() => buildVisiblePages(ledgerPagination.page, ledgerTotalPages.value))
+const ledgerActionTypeLabelMap = Object.freeze({
+  inbound: '入库',
+  outbound: '出库',
+  loss: '损耗',
+  stocktake_adjust: '盘点调整'
+})
+
 function clearFeedbackTimer() {
   if (!feedbackTimer) return
   window.clearTimeout(feedbackTimer)
@@ -188,6 +222,11 @@ function formatDateTime(value) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return '-'
   return date.toLocaleString('zh-CN')
+}
+
+function getLedgerActionTypeLabel(value) {
+  const raw = String(value || '').trim()
+  return ledgerActionTypeLabelMap[raw] || raw || '-'
 }
 
 function normalizeHexColor(value) {
@@ -280,14 +319,15 @@ async function fetchMaterials(page = 1) {
   }
 }
 
-function goMaterialPrevPage() {
-  if (pagination.page <= 1 || loading.value) return
-  fetchMaterials(pagination.page - 1)
+async function handleMaterialPageChange(page) {
+  if (loading.value) return
+  if (page < 1 || page > materialTotalPages.value) return
+  await fetchMaterials(page)
 }
 
-function goMaterialNextPage() {
-  if (pagination.page >= pagination.total_pages || loading.value) return
-  fetchMaterials(pagination.page + 1)
+async function handleMaterialPageSizeChange() {
+  if (loading.value) return
+  await fetchMaterials(1)
 }
 
 async function fetchAlerts() {
@@ -325,14 +365,15 @@ async function fetchLedger(page = 1) {
   }
 }
 
-function goLedgerPrevPage() {
-  if (ledgerPagination.page <= 1 || loadingLedger.value) return
-  fetchLedger(ledgerPagination.page - 1)
+async function handleLedgerPageChange(page) {
+  if (loadingLedger.value) return
+  if (page < 1 || page > ledgerTotalPages.value) return
+  await fetchLedger(page)
 }
 
-function goLedgerNextPage() {
-  if (ledgerPagination.page >= ledgerPagination.total_pages || loadingLedger.value) return
-  fetchLedger(ledgerPagination.page + 1)
+async function handleLedgerPageSizeChange() {
+  if (loadingLedger.value) return
+  await fetchLedger(1)
 }
 
 async function refreshAll() {
@@ -824,23 +865,54 @@ onUnmounted(() => {
           </tbody>
         </table>
       </div>
-      <div class="mt-4 flex items-center justify-between text-sm text-slate-600">
-        <span>第 {{ pagination.page }} / {{ pagination.total_pages || 1 }} 页，共 {{ pagination.total }} 条</span>
-        <div class="flex items-center gap-2">
-          <button
-            @click="goMaterialPrevPage"
-            :disabled="pagination.page <= 1 || loading"
-            class="inventory-btn inventory-btn--ghost"
-          >
-            上一页
-          </button>
-          <button
-            @click="goMaterialNextPage"
-            :disabled="pagination.page >= pagination.total_pages || loading"
-            class="inventory-btn inventory-btn--ghost"
-          >
-            下一页
-          </button>
+      <div v-if="pagination.total > 0" class="mt-4 border-t border-slate-100 bg-gradient-to-r from-slate-50 to-white px-1 py-4">
+        <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+          <p class="text-sm text-slate-600">
+            显示 {{ (pagination.page - 1) * pagination.page_size + 1 }} 到 {{ Math.min(pagination.page * pagination.page_size, pagination.total) }} 条，共 {{ pagination.total }} 条记录
+          </p>
+          <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <label class="flex items-center gap-2 text-sm text-slate-600">
+              <span>每页</span>
+              <select
+                v-model.number="pagination.page_size"
+                @change="handleMaterialPageSizeChange"
+                class="h-9 min-w-[92px] rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option v-for="size in pageSizeOptions" :key="size" :value="size">{{ size }}条</option>
+              </select>
+            </label>
+            <div class="flex items-center gap-1">
+              <button
+                @click="handleMaterialPageChange(pagination.page - 1)"
+                :disabled="pagination.page === 1 || loading"
+                class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                上一页
+              </button>
+              <template v-for="(page, index) in materialVisiblePages" :key="`material-page-${page}-${index}`">
+                <span v-if="page === '...'" class="w-9 select-none text-center text-sm text-slate-400">...</span>
+                <button
+                  v-else
+                  @click="handleMaterialPageChange(page)"
+                  :class="[
+                    'h-9 min-w-[2.25rem] rounded-lg border px-2 text-sm font-medium transition',
+                    pagination.page === page
+                      ? 'border-blue-600 bg-blue-600 text-white shadow-sm shadow-blue-100'
+                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                  ]"
+                >
+                  {{ page }}
+                </button>
+              </template>
+              <button
+                @click="handleMaterialPageChange(pagination.page + 1)"
+                :disabled="pagination.page === materialTotalPages || loading"
+                class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                下一页
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -941,7 +1013,7 @@ onUnmounted(() => {
             <tr v-for="item in ledgerItems" :key="item.id" class="border-b border-slate-100">
               <td class="px-3 py-2">{{ formatDateTime(item.created_at) }}</td>
               <td class="px-3 py-2">{{ item.material_id }}</td>
-              <td class="px-3 py-2">{{ item.action_type }}</td>
+              <td class="px-3 py-2">{{ getLedgerActionTypeLabel(item.action_type) }}</td>
               <td class="px-3 py-2" :class="Number(item.delta_grams) >= 0 ? 'text-emerald-700' : 'text-rose-700'">
                 {{ Number(item.delta_grams) >= 0 ? '+' : '' }}{{ formatGrams(item.delta_grams) }}
               </td>
@@ -952,23 +1024,54 @@ onUnmounted(() => {
           </tbody>
         </table>
       </div>
-      <div class="mt-4 flex items-center justify-between text-sm text-slate-600">
-        <span>第 {{ ledgerPagination.page }} / {{ ledgerPagination.total_pages || 1 }} 页，共 {{ ledgerPagination.total }} 条</span>
-        <div class="flex items-center gap-2">
-          <button
-            @click="goLedgerPrevPage"
-            :disabled="ledgerPagination.page <= 1 || loadingLedger"
-            class="inventory-btn inventory-btn--ghost"
-          >
-            上一页
-          </button>
-          <button
-            @click="goLedgerNextPage"
-            :disabled="ledgerPagination.page >= ledgerPagination.total_pages || loadingLedger"
-            class="inventory-btn inventory-btn--ghost"
-          >
-            下一页
-          </button>
+      <div v-if="ledgerPagination.total > 0" class="mt-4 border-t border-slate-100 bg-gradient-to-r from-slate-50 to-white px-1 py-4">
+        <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+          <p class="text-sm text-slate-600">
+            显示 {{ (ledgerPagination.page - 1) * ledgerPagination.page_size + 1 }} 到 {{ Math.min(ledgerPagination.page * ledgerPagination.page_size, ledgerPagination.total) }} 条，共 {{ ledgerPagination.total }} 条记录
+          </p>
+          <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <label class="flex items-center gap-2 text-sm text-slate-600">
+              <span>每页</span>
+              <select
+                v-model.number="ledgerPagination.page_size"
+                @change="handleLedgerPageSizeChange"
+                class="h-9 min-w-[92px] rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option v-for="size in pageSizeOptions" :key="size" :value="size">{{ size }}条</option>
+              </select>
+            </label>
+            <div class="flex items-center gap-1">
+              <button
+                @click="handleLedgerPageChange(ledgerPagination.page - 1)"
+                :disabled="ledgerPagination.page === 1 || loadingLedger"
+                class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                上一页
+              </button>
+              <template v-for="(page, index) in ledgerVisiblePages" :key="`ledger-page-${page}-${index}`">
+                <span v-if="page === '...'" class="w-9 select-none text-center text-sm text-slate-400">...</span>
+                <button
+                  v-else
+                  @click="handleLedgerPageChange(page)"
+                  :class="[
+                    'h-9 min-w-[2.25rem] rounded-lg border px-2 text-sm font-medium transition',
+                    ledgerPagination.page === page
+                      ? 'border-blue-600 bg-blue-600 text-white shadow-sm shadow-blue-100'
+                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                  ]"
+                >
+                  {{ page }}
+                </button>
+              </template>
+              <button
+                @click="handleLedgerPageChange(ledgerPagination.page + 1)"
+                :disabled="ledgerPagination.page === ledgerTotalPages || loadingLedger"
+                class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                下一页
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </section>

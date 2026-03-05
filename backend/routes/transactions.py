@@ -9,7 +9,7 @@ from utils.bead_inventory_service import generate_entity_id, generate_reference_
 
 transactions_bp = Blueprint('transactions', __name__)
 BEAD_PURCHASE_DESC_PATTERN = re.compile(
-    r'买豆入库：.+?（(?P<material_id>M\d+)）.*?入库\s+(?P<grams>\d+(?:\.\d+)?)g，单号\s+(?P<reference_no>[A-Z0-9]+)'
+    r'买豆(?P<movement>入库|出库)：.+?（(?P<material_id>M\d+)）.*?(?P=movement)\s+(?P<grams>\d+(?:\.\d+)?)g，单号\s+(?P<reference_no>[A-Z0-9]+)'
 )
 
 
@@ -77,6 +77,7 @@ def _parse_bead_purchase_description(description):
     if grams <= 0:
         return None
     return {
+        'movement': match.group('movement'),
         'material_id': match.group('material_id'),
         'grams': grams,
         'reference_no': match.group('reference_no')
@@ -89,45 +90,70 @@ def _rollback_bead_purchase_inventory(transaction, operator):
         return False, '买豆交易缺少可回滚的库存信息'
 
     material_id = parsed['material_id']
-    inbound_reference_no = parsed['reference_no']
+    movement = parsed.get('movement') or '入库'
+    source_reference_no = parsed['reference_no']
     fallback_grams = parsed['grams']
 
-    inbound_ledger = (
+    source_query = (
         BeadInventoryLedger.query
         .filter(BeadInventoryLedger.material_id == material_id)
-        .filter(BeadInventoryLedger.action_type == 'inbound')
-        .filter(BeadInventoryLedger.reference_no == inbound_reference_no)
-        .order_by(BeadInventoryLedger.created_at.desc())
-        .first()
+        .filter(BeadInventoryLedger.reference_no == source_reference_no)
     )
-    if not inbound_ledger:
-        return False, '未找到对应入库流水，无法取消买豆交易'
+    if movement == '出库':
+        source_ledger = (
+            source_query
+            .filter(BeadInventoryLedger.action_type.in_(['outbound', 'loss']))
+            .order_by(BeadInventoryLedger.created_at.desc())
+            .first()
+        )
+        if not source_ledger:
+            return False, '未找到对应出库流水，无法取消买豆交易'
+    else:
+        source_ledger = (
+            source_query
+            .filter(BeadInventoryLedger.action_type == 'inbound')
+            .order_by(BeadInventoryLedger.created_at.desc())
+            .first()
+        )
+        if not source_ledger:
+            return False, '未找到对应入库流水，无法取消买豆交易'
 
-    rollback_grams = abs(float(inbound_ledger.delta_grams or fallback_grams))
+    rollback_grams = abs(float(source_ledger.delta_grams or fallback_grams))
     if rollback_grams <= 0:
-        return False, '入库克数异常，无法取消买豆交易'
+        return False, '回滚克数异常，无法取消买豆交易'
 
     balance = BeadInventoryBalance.query.filter_by(material_id=material_id).first()
     if not balance:
         return False, '未找到豆仓库存记录，无法取消买豆交易'
 
     current_grams = float(balance.current_grams or 0.0)
-    if current_grams + 1e-9 < rollback_grams:
-        return False, '当前库存不足，无法取消该买豆交易'
 
-    balance.current_grams = round(current_grams - rollback_grams, 3)
-    reverse_reference_no = generate_reference_no('OUT')
+    if movement == '出库':
+        balance.current_grams = round(current_grams + rollback_grams, 3)
+        reverse_reference_no = generate_reference_no('IN')
+        reverse_action_type = 'inbound'
+        reverse_delta_grams = rollback_grams
+        reverse_note = f'回滚出库单号 {source_reference_no}'
+    else:
+        if current_grams + 1e-9 < rollback_grams:
+            return False, '当前库存不足，无法取消该买豆交易'
+        balance.current_grams = round(current_grams - rollback_grams, 3)
+        reverse_reference_no = generate_reference_no('OUT')
+        reverse_action_type = 'outbound'
+        reverse_delta_grams = -rollback_grams
+        reverse_note = f'回滚入库单号 {source_reference_no}'
+
     reverse_ledger = BeadInventoryLedger(
         id=generate_entity_id('BL'),
         material_id=material_id,
-        action_type='outbound',
-        delta_grams=-rollback_grams,
+        action_type=reverse_action_type,
+        delta_grams=reverse_delta_grams,
         balance_after_grams=balance.current_grams,
         unit_input='gram',
         unit_count=rollback_grams,
         reference_no=reverse_reference_no,
         reason=f'取消买豆交易（#{transaction.id}）',
-        note=f'回滚入库单号 {inbound_reference_no}',
+        note=reverse_note,
         operator=operator
     )
     db.session.add(reverse_ledger)

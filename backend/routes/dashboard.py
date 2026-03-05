@@ -4,7 +4,15 @@ import re
 from sqlalchemy import func
 from flask import Blueprint, request
 
-from models import ActiveTimer, Customer, Log, Transaction, db
+from models import (
+    ActiveTimer,
+    BeadInventoryLedger,
+    BeadMaterial,
+    Customer,
+    Log,
+    Transaction,
+    db
+)
 from utils.audit_log import enrich_log_data
 from utils.decorators import token_required
 from utils.response import error_response, success_response
@@ -75,6 +83,25 @@ def get_stats():
     ).scalar()
     today_consumption_amount = float(today_consumption_amount_result) if today_consumption_amount_result else 0.0
 
+    today_bead_loss_amount_result = db.session.query(
+        func.coalesce(
+            func.sum(
+                func.abs(BeadInventoryLedger.delta_grams)
+                * (func.coalesce(BeadMaterial.market_price_per_500g, 0) / 500.0)
+            ),
+            0
+        )
+    ).join(
+        BeadMaterial,
+        BeadMaterial.id == BeadInventoryLedger.material_id
+    ).filter(
+        BeadInventoryLedger.action_type == 'loss',
+        BeadInventoryLedger.created_at >= today_start,
+        BeadInventoryLedger.created_at <= today_end
+    ).scalar()
+    today_bead_loss_amount = float(today_bead_loss_amount_result) if today_bead_loss_amount_result else 0.0
+    today_net_income = today_consumption_amount - today_bead_loss_amount
+
     today_consumption_records = Transaction.query.with_entities(Transaction.description).filter(
         Transaction.type == 'consumption',
         Transaction.transaction_time >= today_start,
@@ -96,6 +123,8 @@ def get_stats():
         'today_consumptions': today_consumptions,
         'today_consumption_people': today_consumption_people,
         'today_consumption_amount': today_consumption_amount,
+        'today_bead_loss_amount': today_bead_loss_amount,
+        'today_net_income': today_net_income,
         'total_transactions': total_transactions,
         'active_timers_count': active_timers_count
     }

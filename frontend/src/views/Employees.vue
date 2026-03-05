@@ -58,11 +58,25 @@ const roleOptions = [
 ]
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
-const pageSummary = computed(() => {
-  if (total.value <= 0) return '暂无数据'
-  const start = (currentPage.value - 1) * pageSize.value + 1
-  const end = Math.min(total.value, currentPage.value * pageSize.value)
-  return `第 ${start}-${end} 条，共 ${total.value} 条`
+const fromEntry = computed(() => {
+  if (total.value === 0) return 0
+  return (currentPage.value - 1) * pageSize.value + 1
+})
+const toEntry = computed(() => {
+  if (total.value === 0) return 0
+  return Math.min(currentPage.value * pageSize.value, total.value)
+})
+const visiblePages = computed(() => {
+  const pages = []
+  for (let page = 1; page <= totalPages.value; page += 1) {
+    const shouldShow = page === 1 || page === totalPages.value || Math.abs(page - currentPage.value) <= 1
+    if (shouldShow) {
+      pages.push(page)
+    } else if (pages[pages.length - 1] !== '...') {
+      pages.push('...')
+    }
+  }
+  return pages
 })
 
 const feedbackStyle = computed(() => {
@@ -361,16 +375,10 @@ function refreshList() {
   fetchEmployees()
 }
 
-function goToPrevPage() {
-  if (currentPage.value <= 1 || loading.value) return
-  currentPage.value -= 1
-  fetchEmployees()
-}
-
-function goToNextPage() {
-  if (currentPage.value >= totalPages.value || loading.value) return
-  currentPage.value += 1
-  fetchEmployees()
+async function handlePageChange(page) {
+  if (page < 1 || page > totalPages.value || loading.value) return
+  currentPage.value = page
+  await fetchEmployees()
 }
 
 function onPageSizeChange() {
@@ -413,7 +421,7 @@ onBeforeUnmount(() => {
 
     <section
       v-if="!isAdmin"
-      class="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800"
+      class="employee-access-note rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800"
     >
       当前账号为员工，只允许查看员工列表，不能新增、编辑、重置密码或删除账号。
     </section>
@@ -422,14 +430,14 @@ onBeforeUnmount(() => {
       <section
         v-if="feedback.visible"
         :class="[
-          'rounded-2xl border px-4 py-3 text-sm shadow-sm',
+          'employee-feedback rounded-2xl border px-4 py-3 text-sm shadow-sm',
           feedbackStyle
         ]"
       >
         <div class="flex items-start justify-between gap-3">
           <p>{{ feedback.message }}</p>
           <button
-            class="rounded-md px-2 py-0.5 text-xs font-semibold transition hover:bg-black/5"
+            class="notice-close rounded-md px-2 py-0.5 text-xs font-semibold transition hover:bg-black/5"
             @click="closeFeedback"
           >
             关闭
@@ -438,40 +446,27 @@ onBeforeUnmount(() => {
       </section>
     </Transition>
 
-    <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-      <div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto_auto] lg:items-end">
+    <section class="employee-filter-card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+      <div class="employee-filter-grid grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto] lg:items-end">
         <div>
-          <label for="employee-search" class="mb-1.5 block text-sm font-medium text-slate-700">关键词</label>
+          <label for="employee-search" class="employee-field-label mb-1.5 block text-sm font-medium text-slate-700">关键词</label>
           <input
             id="employee-search"
             v-model="searchKeyword"
             type="text"
             placeholder="按用户名搜索"
-            class="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] focus:ring-offset-1"
+            class="employee-input w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] focus:ring-offset-1"
             @keyup.enter="handleSearch"
           >
         </div>
-        <div>
-          <label for="employee-page-size" class="mb-1.5 block text-sm font-medium text-slate-700">每页数量</label>
-          <select
-            id="employee-page-size"
-            v-model.number="pageSize"
-            class="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] focus:ring-offset-1"
-            @change="onPageSizeChange"
-          >
-            <option v-for="size in pageSizeOptions" :key="size" :value="size">
-              {{ size }}
-            </option>
-          </select>
-        </div>
         <button
-          class="inline-flex min-h-[44px] items-center justify-center rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+          class="btn-secondary inline-flex min-h-[44px] items-center justify-center rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
           @click="resetSearch"
         >
           清空筛选
         </button>
         <button
-          class="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+          class="btn-primary inline-flex min-h-[44px] items-center justify-center rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
           :disabled="loading"
           @click="handleSearch"
         >
@@ -480,14 +475,13 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <section class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <header class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 sm:px-5">
+    <section class="employee-list-card overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <header class="employee-list-header flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 sm:px-5">
         <div>
           <h2 class="text-base font-semibold text-slate-900">员工列表</h2>
-          <p class="text-xs text-slate-500">{{ pageSummary }}</p>
         </div>
         <button
-          class="inline-flex min-h-[36px] items-center rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+          class="btn-ghost inline-flex min-h-[36px] items-center rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
           :disabled="loading"
           @click="refreshList"
         >
@@ -495,27 +489,27 @@ onBeforeUnmount(() => {
         </button>
       </header>
 
-      <div v-if="loading" class="px-5 py-10 text-center text-sm text-slate-500">
+      <div v-if="loading" class="employee-panel-state px-5 py-10 text-center text-sm text-slate-500">
         正在加载员工列表...
       </div>
 
-      <div v-else-if="requestError" class="px-5 py-10 text-center">
+      <div v-else-if="requestError" class="employee-panel-state px-5 py-10 text-center">
         <p class="text-sm text-rose-700">{{ requestError }}</p>
         <button
-          class="mt-4 inline-flex min-h-[40px] items-center rounded-xl border border-rose-300 px-4 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-50"
+          class="btn-danger-outline mt-4 inline-flex min-h-[40px] items-center rounded-xl border border-rose-300 px-4 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-50"
           @click="fetchEmployees"
         >
           重新加载
         </button>
       </div>
 
-      <div v-else-if="employees.length === 0" class="px-5 py-10 text-center text-sm text-slate-500">
+      <div v-else-if="employees.length === 0" class="employee-panel-state px-5 py-10 text-center text-sm text-slate-500">
         暂无员工数据
       </div>
 
       <div v-else class="overflow-x-auto">
-        <table class="min-w-full divide-y divide-slate-200">
-          <thead class="bg-slate-50">
+        <table class="employee-table min-w-full divide-y divide-slate-200">
+          <thead class="employee-table-head bg-slate-50">
             <tr>
               <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">ID</th>
               <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">用户名</th>
@@ -525,7 +519,7 @@ onBeforeUnmount(() => {
             </tr>
           </thead>
           <tbody class="divide-y divide-slate-100">
-            <tr v-for="employee in employees" :key="employee.id" class="hover:bg-slate-50/70">
+            <tr v-for="employee in employees" :key="employee.id" class="employee-row hover:bg-slate-50/70">
               <td class="px-4 py-3 text-sm text-slate-700">{{ employee.id }}</td>
               <td class="px-4 py-3 text-sm font-medium text-slate-900">{{ employee.username }}</td>
               <td class="px-4 py-3 text-sm">
@@ -542,21 +536,21 @@ onBeforeUnmount(() => {
               <td class="px-4 py-3">
                 <div class="flex flex-wrap justify-end gap-2">
                   <button
-                    class="inline-flex min-h-[34px] items-center rounded-lg px-3 text-xs font-medium text-blue-700 transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    class="table-action table-action--edit inline-flex min-h-[34px] items-center rounded-lg px-3 text-xs font-medium text-blue-700 transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
                     :disabled="!isAdmin"
                     @click="openEditDialog(employee)"
                   >
                     编辑
                   </button>
                   <button
-                    class="inline-flex min-h-[34px] items-center rounded-lg px-3 text-xs font-medium text-amber-700 transition hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    class="table-action table-action--reset inline-flex min-h-[34px] items-center rounded-lg px-3 text-xs font-medium text-amber-700 transition hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50"
                     :disabled="!isAdmin"
                     @click="openResetDialog(employee)"
                   >
                     重置密码
                   </button>
                   <button
-                    class="inline-flex min-h-[34px] items-center rounded-lg px-3 text-xs font-medium text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    class="table-action table-action--delete inline-flex min-h-[34px] items-center rounded-lg px-3 text-xs font-medium text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
                     :disabled="!isAdmin"
                     @click="openDeleteDialog(employee)"
                   >
@@ -569,59 +563,90 @@ onBeforeUnmount(() => {
         </table>
       </div>
 
-      <footer class="flex items-center justify-between gap-3 border-t border-slate-100 px-4 py-3 sm:px-5">
-        <p class="text-xs text-slate-500">第 {{ currentPage }} / {{ totalPages }} 页</p>
-        <div class="flex items-center gap-2">
-          <button
-            class="inline-flex min-h-[34px] items-center rounded-lg border border-slate-300 px-3 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-            :disabled="currentPage <= 1 || loading"
-            @click="goToPrevPage"
-          >
-            上一页
-          </button>
-          <button
-            class="inline-flex min-h-[34px] items-center rounded-lg border border-slate-300 px-3 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-            :disabled="currentPage >= totalPages || loading"
-            @click="goToNextPage"
-          >
-            下一页
-          </button>
+      <footer v-if="total > 0" class="employee-pagination border-t border-slate-100 bg-slate-50/70 px-5 py-4">
+        <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+          <p class="text-sm text-slate-600">
+            显示 {{ fromEntry }} 到 {{ toEntry }} 条，共 {{ total }} 条记录
+          </p>
+          <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <label class="flex items-center gap-2 text-sm text-slate-600">
+              <span>每页</span>
+              <select
+                v-model.number="pageSize"
+                class="h-9 min-w-[92px] rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                @change="onPageSizeChange"
+              >
+                <option v-for="size in pageSizeOptions" :key="size" :value="size">{{ size }}条</option>
+              </select>
+            </label>
+            <div class="flex items-center gap-1">
+              <button
+                class="h-9 rounded-lg border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-45"
+                :disabled="currentPage === 1 || loading"
+                @click="handlePageChange(currentPage - 1)"
+              >
+                上一页
+              </button>
+              <template v-for="(page, index) in visiblePages" :key="`employee-page-${page}-${index}`">
+                <span v-if="page === '...'" class="w-9 select-none text-center text-sm text-slate-400">...</span>
+                <button
+                  v-else
+                  :class="[
+                    'h-9 min-w-[2.25rem] rounded-lg border px-2 text-sm font-medium transition',
+                    currentPage === page
+                      ? 'border-blue-600 bg-blue-600 text-white shadow-sm shadow-blue-100'
+                      : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
+                  ]"
+                  @click="handlePageChange(page)"
+                >
+                  {{ page }}
+                </button>
+              </template>
+              <button
+                class="h-9 rounded-lg border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-45"
+                :disabled="currentPage === totalPages || loading"
+                @click="handlePageChange(currentPage + 1)"
+              >
+                下一页
+              </button>
+            </div>
+          </div>
         </div>
       </footer>
     </section>
 
     <Teleport to="body">
-      <div v-if="showCreateDialog" class="fixed inset-0 z-50 flex items-center justify-center p-4">
-        <div class="absolute inset-0 bg-slate-900/55 backdrop-blur-sm" @click="closeCreateDialog"></div>
-        <div class="relative w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-2xl">
-          <div class="border-b border-slate-100 px-5 py-4">
+      <div v-if="showCreateDialog" class="dialog-wrap fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div class="dialog-mask absolute inset-0 bg-slate-900/55 backdrop-blur-sm" @click="closeCreateDialog"></div>
+        <div class="dialog-panel relative w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-2xl">
+          <div class="dialog-header border-b border-slate-100 px-5 py-4">
             <h3 class="text-lg font-semibold text-slate-900">新增员工</h3>
           </div>
-          <form class="space-y-4 px-5 py-5" @submit.prevent="submitCreate">
+          <form class="dialog-form space-y-4 px-5 py-5" @submit.prevent="submitCreate">
             <div>
-              <label for="create-username" class="mb-1.5 block text-sm font-medium text-slate-700">用户名</label>
+              <label for="create-username" class="employee-field-label mb-1.5 block text-sm font-medium text-slate-700">用户名</label>
               <input
                 id="create-username"
                 v-model.trim="createForm.username"
                 type="text"
-                class="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] focus:ring-offset-1"
+                class="employee-input w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] focus:ring-offset-1"
               >
             </div>
             <div>
-              <label for="create-password" class="mb-1.5 block text-sm font-medium text-slate-700">初始密码</label>
+              <label for="create-password" class="employee-field-label mb-1.5 block text-sm font-medium text-slate-700">初始密码</label>
               <input
                 id="create-password"
                 v-model="createForm.password"
                 type="password"
-                class="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] focus:ring-offset-1"
+                class="employee-input w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] focus:ring-offset-1"
               >
             </div>
             <div>
-              <label for="create-role" class="mb-1.5 block text-sm font-medium text-slate-700">角色</label>
+              <label for="create-role" class="employee-field-label mb-1.5 block text-sm font-medium text-slate-700">角色</label>
               <select
                 id="create-role"
                 v-model="createForm.role"
-                class="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] focus:ring-offset-1"
+                class="employee-input w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] focus:ring-offset-1"
               >
                 <option v-for="role in roleOptions" :key="role.value" :value="role.value">
                   {{ role.label }}
@@ -631,14 +656,14 @@ onBeforeUnmount(() => {
             <div class="flex justify-end gap-3 pt-1">
               <button
                 type="button"
-                class="inline-flex min-h-[40px] items-center rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                class="btn-modal-secondary inline-flex min-h-[40px] items-center rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
                 @click="closeCreateDialog"
               >
                 取消
               </button>
               <button
                 type="submit"
-                class="inline-flex min-h-[40px] items-center rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                class="btn-modal-primary inline-flex min-h-[40px] items-center rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
                 :disabled="submitting"
               >
                 {{ submitting ? '保存中...' : '创建' }}
@@ -650,28 +675,28 @@ onBeforeUnmount(() => {
     </Teleport>
 
     <Teleport to="body">
-      <div v-if="showEditDialog" class="fixed inset-0 z-50 flex items-center justify-center p-4">
-        <div class="absolute inset-0 bg-slate-900/55 backdrop-blur-sm" @click="closeEditDialog"></div>
-        <div class="relative w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-2xl">
-          <div class="border-b border-slate-100 px-5 py-4">
+      <div v-if="showEditDialog" class="dialog-wrap fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div class="dialog-mask absolute inset-0 bg-slate-900/55 backdrop-blur-sm" @click="closeEditDialog"></div>
+        <div class="dialog-panel relative w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-2xl">
+          <div class="dialog-header border-b border-slate-100 px-5 py-4">
             <h3 class="text-lg font-semibold text-slate-900">编辑员工</h3>
           </div>
-          <form class="space-y-4 px-5 py-5" @submit.prevent="submitEdit">
+          <form class="dialog-form space-y-4 px-5 py-5" @submit.prevent="submitEdit">
             <div>
-              <label for="edit-username" class="mb-1.5 block text-sm font-medium text-slate-700">用户名</label>
+              <label for="edit-username" class="employee-field-label mb-1.5 block text-sm font-medium text-slate-700">用户名</label>
               <input
                 id="edit-username"
                 v-model.trim="editForm.username"
                 type="text"
-                class="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] focus:ring-offset-1"
+                class="employee-input w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] focus:ring-offset-1"
               >
             </div>
             <div>
-              <label for="edit-role" class="mb-1.5 block text-sm font-medium text-slate-700">角色</label>
+              <label for="edit-role" class="employee-field-label mb-1.5 block text-sm font-medium text-slate-700">角色</label>
               <select
                 id="edit-role"
                 v-model="editForm.role"
-                class="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] focus:ring-offset-1"
+                class="employee-input w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] focus:ring-offset-1"
               >
                 <option v-for="role in roleOptions" :key="role.value" :value="role.value">
                   {{ role.label }}
@@ -681,14 +706,14 @@ onBeforeUnmount(() => {
             <div class="flex justify-end gap-3 pt-1">
               <button
                 type="button"
-                class="inline-flex min-h-[40px] items-center rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                class="btn-modal-secondary inline-flex min-h-[40px] items-center rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
                 @click="closeEditDialog"
               >
                 取消
               </button>
               <button
                 type="submit"
-                class="inline-flex min-h-[40px] items-center rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                class="btn-modal-primary inline-flex min-h-[40px] items-center rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
                 :disabled="submitting"
               >
                 {{ submitting ? '保存中...' : '保存' }}

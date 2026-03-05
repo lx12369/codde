@@ -150,7 +150,7 @@ def _get_or_create_bead_purchase_customer():
     return customer
 
 
-def _create_bead_purchase_transaction(material, grams, reference_no, operator):
+def _create_bead_purchase_transaction(material, grams, reference_no, operator, movement='outbound'):
     _get_or_create_bead_purchase_customer()
 
     raw_price = material.market_price_per_500g
@@ -159,10 +159,11 @@ def _create_bead_purchase_transaction(material, grams, reference_no, operator):
     price_warning = ''
     if market_price is None:
         price_warning = '（市场价缺失或异常，按 0 元记账）'
+    movement_label = '出库' if movement == 'outbound' else '入库'
 
     description = (
-        f'买豆入库：{material.name}（{material.id}），'
-        f'入库 {grams:.3f}g，单号 {reference_no}，'
+        f'买豆{movement_label}：{material.name}（{material.id}），'
+        f'{movement_label} {grams:.3f}g，单号 {reference_no}，'
         f'市场价 {market_price if market_price is not None else 0:.2f} 元/500g{price_warning}'
     )
     transaction = Transaction(
@@ -642,7 +643,6 @@ def create_inbound():
         note=note,
         operator=operator
     )
-    transaction = _create_bead_purchase_transaction(material, grams, reference_no, operator)
     write_log(
         'bead_inventory_inbound',
         f'豆料入库：{material.name}（{material_id}） +{grams:.3f}g，单号 {reference_no}',
@@ -652,7 +652,6 @@ def create_inbound():
 
     return success_response({
         'ledger': ledger.to_dict(),
-        'transaction': transaction.to_dict(),
         'balance': balance.to_dict(),
         'material': _material_payload(material)
     }, '入库成功', 201)
@@ -705,6 +704,7 @@ def create_outbound():
         note=note,
         operator=operator
     )
+    transaction = _create_bead_purchase_transaction(material, grams, reference_no, operator, movement='outbound')
     write_log(
         'bead_inventory_outbound' if outbound_type == 'outbound' else 'bead_inventory_loss',
         f'豆料出库：{material.name}（{material_id}） {delta:.3f}g，单号 {reference_no}',
@@ -714,6 +714,7 @@ def create_outbound():
 
     return success_response({
         'ledger': ledger.to_dict(),
+        'transaction': transaction.to_dict(),
         'balance': balance.to_dict(),
         'material': _material_payload(material)
     }, '出库成功', 201)

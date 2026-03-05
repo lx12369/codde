@@ -72,6 +72,65 @@ const formatFileSize = (bytes) => {
 
 const formatNumber = (num) => safeCount(num).toLocaleString()
 
+const overviewCards = computed(() => ([
+  {
+    key: 'storageLocation',
+    label: '存储位置',
+    value: dataStatus.storageLocation || '本地数据库（路径未知）',
+    helper: '当前数据库文件路径',
+    tone: 'slate'
+  },
+  {
+    key: 'dataSize',
+    label: '数据大小',
+    value: dataStatus.dataSize,
+    helper: '用于评估备份体量',
+    tone: 'amber'
+  },
+  {
+    key: 'customerCount',
+    label: '客户总数',
+    value: formatNumber(dataStatus.customerCount),
+    helper: '活跃客户档案',
+    tone: 'sky'
+  },
+  {
+    key: 'transactionCount',
+    label: '交易记录',
+    value: formatNumber(dataStatus.transactionCount),
+    helper: '充值与消费流水',
+    tone: 'indigo'
+  },
+  {
+    key: 'beadMaterialCount',
+    label: '豆料档案',
+    value: formatNumber(dataStatus.beadMaterialCount),
+    helper: '材料基础信息',
+    tone: 'emerald'
+  },
+  {
+    key: 'beadBalanceCount',
+    label: '豆仓库存记录',
+    value: formatNumber(dataStatus.beadBalanceCount),
+    helper: '库存余额快照',
+    tone: 'teal'
+  },
+  {
+    key: 'beadLedgerCount',
+    label: '豆仓流水',
+    value: formatNumber(dataStatus.beadLedgerCount),
+    helper: '入库、出库、损耗',
+    tone: 'violet'
+  },
+  {
+    key: 'beadStocktakeCount',
+    label: '豆仓盘点记录',
+    value: formatNumber(dataStatus.beadStocktakeCount),
+    helper: '盘点校准历史',
+    tone: 'rose'
+  }
+]))
+
 const formatDateTime = (date) => {
   if (!(date instanceof Date)) return ''
   return new Intl.DateTimeFormat('zh-CN', {
@@ -253,18 +312,35 @@ onUnmounted(() => {
 
 <template>
   <div class="settings-page space-y-6">
-    <section class="page-hero rounded-3xl p-6 sm:p-8">
-      <div class="relative z-10 flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
-        <div class="max-w-2xl space-y-3">
+    <section class="settings-hero rounded-3xl p-6 sm:p-8">
+      <div class="settings-hero__veil" aria-hidden="true"></div>
+      <div class="relative z-10 flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+        <div class="max-w-3xl space-y-4">
           <p class="page-hero__eyebrow">Data Control Center</p>
           <h1 class="page-hero__title">数据管理</h1>
+          <p class="settings-hero__subtitle">
+            统一维护系统备份、恢复与清理流程。所有高风险动作建议先执行备份并确认当前状态。
+          </p>
+          <div class="settings-hero__meta flex flex-wrap items-center gap-2">
+            <span
+              :class="[
+                'inline-flex items-center rounded-full border px-3 py-1 text-xs sm:text-sm font-semibold',
+                statusBadgeStyle
+              ]"
+            >
+              {{ statusBadgeText }}
+            </span>
+            <span class="inline-flex items-center rounded-full border border-slate-200 bg-white/75 px-3 py-1 text-xs sm:text-sm font-medium text-slate-700">
+              最近同步：{{ lastSyncedAt || '尚未刷新' }}
+            </span>
+          </div>
         </div>
 
         <button
           type="button"
           :disabled="isAnyActionRunning"
           @click="fetchDataStatus({ withFeedback: true })"
-          class="page-hero__action"
+          class="page-hero__action settings-hero__action"
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -290,104 +366,85 @@ onUnmounted(() => {
         v-if="feedback.message"
         role="status"
         aria-live="polite"
-        :class="['rounded-2xl border px-4 py-3 sm:px-5 sm:py-4 text-sm sm:text-[0.95rem] shadow-sm', feedbackStyle]"
+        :class="['rounded-2xl border px-4 py-3 sm:px-5 sm:py-4 text-sm sm:text-[0.95rem] shadow-sm settings-feedback', feedbackStyle]"
       >
         {{ feedback.message }}
       </div>
     </Transition>
 
     <section class="panel-surface rounded-3xl border border-slate-200/80 p-5 sm:p-6 lg:p-8 space-y-8 shadow-sm">
-      <div class="rounded-2xl border border-sky-100 bg-gradient-to-b from-white via-white to-sky-50/80 p-5 sm:p-6">
-        <div class="flex flex-wrap items-start justify-between gap-3">
+      <div class="settings-bento grid grid-cols-1 gap-5 xl:grid-cols-[1.45fr_minmax(0,1fr)]">
+        <section class="overview-panel rounded-2xl border border-sky-100 bg-gradient-to-b from-white via-white to-sky-50/80 p-5 sm:p-6">
           <div>
             <h2 class="text-lg sm:text-xl font-bold text-slate-900">状态总览</h2>
             <p class="mt-1 text-sm text-slate-500">
-              最近刷新：{{ lastSyncedAt || '尚未刷新' }}
+              数据快照用于评估系统体量与恢复风险，建议操作前先刷新状态。
             </p>
           </div>
-          <span
-            :class="[
-              'inline-flex items-center rounded-full border px-3 py-1 text-xs sm:text-sm font-semibold',
-              statusBadgeStyle
-            ]"
-          >
-            {{ statusBadgeText }}
-          </span>
-        </div>
 
-        <div class="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <article class="status-card">
-            <p class="status-card__label">存储位置</p>
-            <p class="status-card__value break-all">{{ dataStatus.storageLocation }}</p>
-          </article>
-          <article class="status-card" style="animation-delay: 0.04s">
-            <p class="status-card__label">数据大小</p>
-            <p class="status-card__value">{{ dataStatus.dataSize }}</p>
-          </article>
-          <article class="status-card" style="animation-delay: 0.08s">
-            <p class="status-card__label">客户总数</p>
-            <p class="status-card__value">{{ formatNumber(dataStatus.customerCount) }}</p>
-          </article>
-          <article class="status-card" style="animation-delay: 0.12s">
-            <p class="status-card__label">交易记录</p>
-            <p class="status-card__value">{{ formatNumber(dataStatus.transactionCount) }}</p>
-          </article>
-          <article class="status-card" style="animation-delay: 0.16s">
-            <p class="status-card__label">豆料档案</p>
-            <p class="status-card__value">{{ formatNumber(dataStatus.beadMaterialCount) }}</p>
-          </article>
-          <article class="status-card" style="animation-delay: 0.2s">
-            <p class="status-card__label">豆仓库存记录</p>
-            <p class="status-card__value">{{ formatNumber(dataStatus.beadBalanceCount) }}</p>
-          </article>
-          <article class="status-card" style="animation-delay: 0.24s">
-            <p class="status-card__label">豆仓流水</p>
-            <p class="status-card__value">{{ formatNumber(dataStatus.beadLedgerCount) }}</p>
-          </article>
-          <article class="status-card" style="animation-delay: 0.28s">
-            <p class="status-card__label">豆仓盘点记录</p>
-            <p class="status-card__value">{{ formatNumber(dataStatus.beadStocktakeCount) }}</p>
-          </article>
-        </div>
-      </div>
+          <div class="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2">
+            <article
+              v-for="(card, index) in overviewCards"
+              :key="card.key"
+              :class="['status-card', `status-card--${card.tone}`]"
+              :style="{ animationDelay: `${index * 0.05}s` }"
+            >
+              <p class="status-card__label">{{ card.label }}</p>
+              <p :class="['status-card__value', card.key === 'storageLocation' ? 'break-all' : '']">
+                {{ card.value }}
+              </p>
+              <p class="status-card__helper">{{ card.helper }}</p>
+            </article>
+          </div>
+        </section>
 
-      <div class="grid grid-cols-1 gap-5 xl:grid-cols-2">
-        <article class="action-card action-card--backup">
-          <div>
-            <h3 class="action-card__title">数据备份</h3>
+        <section class="operation-panel grid grid-cols-1 gap-5">
+          <article class="action-card action-card--backup">
+            <div class="action-card__head">
+              <h3 class="action-card__title">数据备份</h3>
+              <span class="action-card__tag">推荐先执行</span>
+            </div>
             <p class="action-card__desc">导出当前系统快照，生成本地 JSON 备份文件。</p>
-          </div>
-          <button
-            type="button"
-            :disabled="isAnyActionRunning"
-            @click="backupData"
-            class="action-btn action-btn--backup"
-          >
-            {{ backupLoading ? '备份中...' : '立即备份到文件' }}
-          </button>
-        </article>
+            <button
+              type="button"
+              :disabled="isAnyActionRunning"
+              @click="backupData"
+              class="action-btn action-btn--backup"
+            >
+              {{ backupLoading ? '备份中...' : '立即备份到文件' }}
+            </button>
+          </article>
 
-        <article class="action-card action-card--restore">
-          <div>
-            <h3 class="action-card__title">数据恢复</h3>
+          <article class="action-card action-card--restore">
+            <div class="action-card__head">
+              <h3 class="action-card__title">数据恢复</h3>
+              <span class="action-card__tag">需谨慎</span>
+            </div>
             <p class="action-card__desc">上传 `.json` 备份文件，将系统恢复到指定快照。</p>
-          </div>
-          <input
-            ref="fileInput"
-            type="file"
-            accept=".json"
-            class="hidden"
-            @change="restoreData"
-          >
-          <button
-            type="button"
-            :disabled="isAnyActionRunning"
-            @click="triggerRestore"
-            class="action-btn action-btn--restore"
-          >
-            {{ restoreLoading ? '恢复中...' : '上传 JSON 并恢复' }}
-          </button>
-        </article>
+            <input
+              ref="fileInput"
+              type="file"
+              accept=".json"
+              class="hidden"
+              @change="restoreData"
+            >
+            <button
+              type="button"
+              :disabled="isAnyActionRunning"
+              @click="triggerRestore"
+              class="action-btn action-btn--restore"
+            >
+              {{ restoreLoading ? '恢复中...' : '上传 JSON 并恢复' }}
+            </button>
+          </article>
+
+          <article class="tips-card rounded-2xl border border-indigo-100 bg-indigo-50/70 p-4 text-sm text-indigo-900">
+            <h4 class="font-semibold">操作建议</h4>
+            <p class="mt-2 leading-relaxed text-indigo-800/90">
+              推荐顺序：刷新状态 → 备份数据 → 执行恢复或清理。若状态异常，请先检查网络与权限。
+            </p>
+          </article>
+        </section>
       </div>
 
       <section class="danger-zone rounded-2xl border border-rose-200 bg-gradient-to-b from-rose-50 to-white p-5 sm:p-6">
@@ -455,8 +512,47 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.settings-page {
+  font-family: 'Fira Sans', 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
+}
+
+.settings-hero {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid #dbe7f5;
+  background: linear-gradient(135deg, #f8fbff 0%, #eef6ff 48%, #f9fbff 100%);
+}
+
+.settings-hero__veil {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 10% 10%, rgba(59, 130, 246, 0.14), transparent 36%),
+    radial-gradient(circle at 92% 82%, rgba(245, 158, 11, 0.12), transparent 33%);
+}
+
+.settings-hero__subtitle {
+  max-width: 70ch;
+  color: #334155;
+  font-size: 0.95rem;
+  line-height: 1.65;
+}
+
+.settings-hero__action {
+  min-height: 44px;
+}
+
+.settings-feedback {
+  backdrop-filter: blur(2px);
+}
+
 .panel-surface {
   background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+}
+
+.overview-panel {
+  box-shadow: inset 0 0 0 1px rgba(186, 230, 253, 0.36);
 }
 
 .status-card {
@@ -464,7 +560,7 @@ onUnmounted(() => {
   border-radius: 1rem;
   background: #ffffff;
   padding: 1rem;
-  min-height: 128px;
+  min-height: 138px;
   box-shadow: 0 10px 20px -18px rgba(6, 37, 82, 0.65);
   transition: transform 220ms ease, box-shadow 220ms ease, border-color 220ms ease;
   animation: card-in 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
@@ -487,7 +583,48 @@ onUnmounted(() => {
   color: #0f172a;
   font-size: 1.05rem;
   font-weight: 700;
-  line-height: 1.5;
+  line-height: 1.4;
+}
+
+.status-card__helper {
+  margin-top: 0.4rem;
+  font-size: 0.78rem;
+  color: #64748b;
+}
+
+.status-card--amber {
+  border-color: #fde68a;
+  background: linear-gradient(180deg, #ffffff 0%, #fffbeb 100%);
+}
+
+.status-card--sky {
+  border-color: #bae6fd;
+  background: linear-gradient(180deg, #ffffff 0%, #f0f9ff 100%);
+}
+
+.status-card--indigo {
+  border-color: #c7d2fe;
+  background: linear-gradient(180deg, #ffffff 0%, #eef2ff 100%);
+}
+
+.status-card--emerald {
+  border-color: #bbf7d0;
+  background: linear-gradient(180deg, #ffffff 0%, #f0fdf4 100%);
+}
+
+.status-card--teal {
+  border-color: #99f6e4;
+  background: linear-gradient(180deg, #ffffff 0%, #f0fdfa 100%);
+}
+
+.status-card--violet {
+  border-color: #ddd6fe;
+  background: linear-gradient(180deg, #ffffff 0%, #f5f3ff 100%);
+}
+
+.status-card--rose {
+  border-color: #fecdd3;
+  background: linear-gradient(180deg, #ffffff 0%, #fff1f2 100%);
 }
 
 .action-card {
@@ -516,11 +653,34 @@ onUnmounted(() => {
   font-weight: 800;
 }
 
+.action-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.action-card__tag {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 9999px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: rgba(255, 255, 255, 0.62);
+  padding: 0.2rem 0.55rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #334155;
+}
+
 .action-card__desc {
   margin-top: 0.25rem;
   color: #475569;
   font-size: 0.92rem;
   line-height: 1.55;
+}
+
+.tips-card {
+  box-shadow: inset 0 0 0 1px rgba(99, 102, 241, 0.06);
 }
 
 .action-btn {
@@ -552,7 +712,23 @@ onUnmounted(() => {
 }
 
 .danger-zone {
+  position: relative;
+  overflow: hidden;
   box-shadow: inset 0 0 0 1px rgba(251, 113, 133, 0.14);
+}
+
+.danger-zone::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    -35deg,
+    rgba(244, 63, 94, 0.05),
+    rgba(244, 63, 94, 0.05) 6px,
+    transparent 6px,
+    transparent 16px
+  );
 }
 
 .notice-enter-active,
@@ -590,6 +766,10 @@ onUnmounted(() => {
 @media (max-width: 420px) {
   .status-card {
     min-height: 110px;
+  }
+
+  .settings-hero__subtitle {
+    font-size: 0.9rem;
   }
 }
 </style>
