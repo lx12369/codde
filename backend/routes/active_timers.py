@@ -1,11 +1,14 @@
-﻿import time
+import time
+import re
 from datetime import datetime
-from flask import Blueprint, request, g
-from models.models import db, ActiveTimer, Customer, Balance, Transaction, Log, User
+from flask import Blueprint, request
+from models.models import db, ActiveTimer, Customer, Balance, Transaction
+from utils.audit_log import get_operator_name, write_log
 from utils.decorators import token_required
 from utils.response import success_response, error_response
 
 active_timers_bp = Blueprint('active_timers', __name__)
+TABLE_NO_PATTERN = re.compile(r'^([A-HJ-NP-Za-hj-np-z])桌([1-9]|1[0-9]|20)号$')
 
 
 def _to_float(value, default=None):
@@ -31,16 +34,34 @@ def _generate_transaction_id():
     return f'T{int(datetime.utcnow().timestamp() * 1000)}'
 
 
-def _resolve_operator():
-    user_id = getattr(g, 'current_user_id', None)
-    if user_id is None:
-        return 'unknown'
+def _normalize_table_no(value):
+    raw = str(value or '').strip()
+    matched = TABLE_NO_PATTERN.match(raw)
+    if not matched:
+        return raw
+    area = matched.group(1).upper()
+    seat = matched.group(2)
+    return f'{area}桌{seat}号'
 
-    user = User.query.get(user_id)
-    if user and user.username:
-        return user.username
 
-    return 'unknown'
+def _validate_table_no(table_no, exclude_timer_id=None):
+    if not table_no:
+        return '桌号不能为空'
+
+    if not TABLE_NO_PATTERN.match(table_no):
+        return '桌号必须在 A-H/J-N/P-Z 桌、1-20号范围内'
+
+    query = ActiveTimer.query.filter(
+        ActiveTimer.status.in_(['active', 'paused']),
+        ActiveTimer.table_no == table_no
+    )
+    if exclude_timer_id:
+        query = query.filter(ActiveTimer.id != exclude_timer_id)
+
+    if query.first():
+        return f'桌号已占用：{table_no}'
+
+    return None
 
 
 @active_timers_bp.route('', methods=['GET'])
@@ -70,6 +91,7 @@ def create_active_timer():
 
     customer_id = str(data.get('customer_id', '')).strip()
     timer_type = str(data.get('timer_type', '')).strip() or 'limited'
+    table_no = _normalize_table_no(data.get('table_no', data.get('tableNo')))
     notes = data.get('notes', '')
     notes = str(notes).strip() if notes else None
 
@@ -80,12 +102,16 @@ def create_active_timer():
     if not customer or customer.is_deleted:
         return error_response('Customer not found', 404)
 
+    table_no_error = _validate_table_no(table_no)
+    if table_no_error:
+        return error_response(table_no_error, 400)
 
     timer_id = f'TM{time.time_ns()}'
 
     timer = ActiveTimer(
         id=timer_id,
         customer_id=customer_id,
+        table_no=table_no,
         start_time=datetime.utcnow(),
         timer_type=timer_type,
         notes=notes,
@@ -93,6 +119,14 @@ def create_active_timer():
     )
 
     db.session.add(timer)
+
+    operator = get_operator_name(default='unknown')
+    write_log(
+        'timer_start',
+        f'开始计时：客户 {customer.name}（{customer_id}），桌号 {table_no}，类型 {timer_type}',
+        operator=operator
+    )
+
     db.session.commit()
 
     timer_dict = timer.to_dict()
@@ -114,8 +148,23 @@ def update_active_timer(timer_id):
     if not data:
         return error_response('No data provided', 400)
 
+    before_notes = timer.notes
+    before_status = timer.status
+    before_timer_type = timer.timer_type
+    before_table_no = timer.table_no
+
+    timer_type = data.get('timer_type')
     notes = data.get('notes')
     status = data.get('status')
+    has_table_no = 'table_no' in data or 'tableNo' in data
+    table_no = _normalize_table_no(data.get('table_no', data.get('tableNo')))
+
+    if timer_type is not None:
+        timer_type = str(timer_type).strip()
+        valid_timer_types = ['limited', 'weekday', 'weekend']
+        if timer_type not in valid_timer_types:
+            return error_response(f'Invalid timer_type. Must be one of: {", ".join(valid_timer_types)}', 400)
+        timer.timer_type = timer_type
 
     if notes is not None:
         notes = str(notes).strip()
@@ -126,6 +175,32 @@ def update_active_timer(timer_id):
         if status not in valid_statuses:
             return error_response(f'Invalid status. Must be one of: {", ".join(valid_statuses)}', 400)
         timer.status = status
+
+    if has_table_no:
+        table_no_error = _validate_table_no(table_no, exclude_timer_id=timer.id)
+        if table_no_error:
+            return error_response(table_no_error, 400)
+        timer.table_no = table_no
+
+    changes = []
+    if before_timer_type != timer.timer_type:
+        changes.append(f'计时类型：{before_timer_type} -> {timer.timer_type}')
+    if before_notes != timer.notes:
+        changes.append('备注已更新')
+    if before_status != timer.status:
+        changes.append(f'状态：{before_status} -> {timer.status}')
+    if before_table_no != timer.table_no:
+        changes.append(f'桌号：{before_table_no or "-"} -> {timer.table_no}')
+
+    if changes:
+        customer = Customer.query.get(timer.customer_id)
+        customer_label = f'{customer.name}（{timer.customer_id}）' if customer else timer.customer_id
+        operator = get_operator_name(default='unknown')
+        write_log(
+            'timer_update',
+            f'更新计时：{customer_label}，变更：{"；".join(changes)}',
+            operator=operator
+        )
 
     db.session.commit()
 
@@ -167,7 +242,7 @@ def settle_active_timer(timer_id):
     if not balance or balance.balance < amount:
         return error_response('Insufficient balance', 400)
 
-    operator = _resolve_operator()
+    operator = get_operator_name(default='unknown')
     transaction_id = _generate_transaction_id()
 
     transaction = Transaction(
@@ -188,14 +263,13 @@ def settle_active_timer(timer_id):
         else:
             timer.notes = f'[settlement] {notes}'
 
-    log = Log(
-        type='consumption',
-        description=f'客户 {customer.name}（{timer.customer_id}）计时消费 ¥{amount:.2f}：{description}',
+    write_log(
+        'timer_settle',
+        f'计时结算：客户 {customer.name}（{timer.customer_id}）扣费 ¥{amount:.2f}，说明：{description}',
         operator=operator
     )
 
     db.session.add(transaction)
-    db.session.add(log)
     db.session.commit()
 
     return success_response(
@@ -216,8 +290,18 @@ def delete_active_timer(timer_id):
     if not timer:
         return error_response('Timer not found', 404)
 
+    customer = Customer.query.get(timer.customer_id)
+    customer_label = f'{customer.name}（{timer.customer_id}）' if customer else timer.customer_id
+
     db.session.delete(timer)
+
+    operator = get_operator_name(default='unknown')
+    write_log(
+        'timer_delete',
+        f'删除计时：{customer_label}，计时器ID {timer_id}',
+        operator=operator
+    )
+
     db.session.commit()
 
     return success_response(message='Timer ended and deleted successfully')
-

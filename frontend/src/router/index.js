@@ -30,6 +30,11 @@ const router = createRouter({
           component: () => import('@/views/Customers.vue')
         },
         {
+          path: 'employees',
+          name: 'employees',
+          component: () => import('@/views/Employees.vue')
+        },
+        {
           path: 'transactions',
           name: 'transactions',
           component: () => import('@/views/Transactions.vue')
@@ -45,6 +50,11 @@ const router = createRouter({
           component: () => import('@/views/Billing.vue')
         },
         {
+          path: 'bead-inventory',
+          name: 'bead-inventory',
+          component: () => import('@/views/BeadInventory.vue')
+        },
+        {
           path: 'active-timers',
           name: 'active-timers',
           component: () => import('@/views/ActiveTimers.vue')
@@ -52,7 +62,14 @@ const router = createRouter({
         {
           path: 'settings',
           name: 'settings',
-          component: () => import('@/views/Settings.vue')
+          component: () => import('@/views/Settings.vue'),
+          meta: { requiresAdmin: true }
+        },
+        {
+          path: 'system-logs',
+          name: 'system-logs',
+          component: () => import('@/views/SystemLogs.vue'),
+          meta: { requiresAdmin: true }
         }
       ]
     },
@@ -65,10 +82,16 @@ const router = createRouter({
 
 router.beforeEach((to, from, next) => {
   const authStore = useAuthStore()
+  const isAdmin = String(authStore.user?.role || '').toLowerCase() === 'admin'
 
   if (to.meta.requiresAuth && !authStore.isAuthenticated) {
     next({ name: 'login' })
   } else if (to.meta.guest && authStore.isAuthenticated) {
+    next({ name: 'dashboard' })
+  } else if (to.meta.requiresAdmin && !isAdmin) {
+    if (typeof window !== 'undefined') {
+      window.alert('当前账号无权访问该页面')
+    }
     next({ name: 'dashboard' })
   } else {
     next()

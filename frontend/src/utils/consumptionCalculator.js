@@ -1,4 +1,6 @@
-﻿const DEFAULT_BILLING_RULES = {
+﻿import { getEffectiveBillingDayType } from '@/utils/dayType'
+
+const DEFAULT_BILLING_RULES = {
   limited: {
     price1h: 18.9,
     price2h: 35.8,
@@ -20,6 +22,9 @@
     largeImageFee: 5,
     extraSmallImageFee: 3,
     extraLargeImageFee: 5
+  },
+  overtime: {
+    ratePerMinute: 0.5
   }
 }
 
@@ -38,8 +43,21 @@ function round2(value) {
   return Math.round((value + Number.EPSILON) * 100) / 100
 }
 
-export function calculateMeituanDeduction(baseAmount, rate = MEITUAN_RATE) {
+function isLimited2hPackage(options = {}) {
+  const packagePlan = String(options.packagePlan || '').trim()
+  if (packagePlan === 'limited2h') return true
+
+  const billingType = String(options.billingType || '').trim()
+  const duration = String(options.duration || '').trim()
+  return billingType === 'limited' && duration === '2'
+}
+
+export function calculateMeituanDeduction(baseAmount, rate = MEITUAN_RATE, options = {}) {
   const safeBase = Math.max(0, toNumber(baseAmount, 0))
+  if (isLimited2hPackage(options)) {
+    return round2(Math.min(safeBase, 2.5))
+  }
+
   const safeRate = Math.max(0, toNumber(rate, MEITUAN_RATE))
   return round2(safeBase * safeRate)
 }
@@ -83,6 +101,10 @@ export function normalizeBillingRules(raw = {}) {
     materials: {
       ...DEFAULT_BILLING_RULES.materials,
       ...(raw.materials || {})
+    },
+    overtime: {
+      ...DEFAULT_BILLING_RULES.overtime,
+      ...(raw.overtime || {})
     }
   }
 }
@@ -198,9 +220,7 @@ function resolveTimerDayType(requestedBillingType, timerDayType, settlementTimes
     return timerDayType
   }
 
-  const date = settlementTimestamp ? new Date(settlementTimestamp) : new Date()
-  const day = date.getDay()
-  return day === 0 || day === 6 ? 'weekend' : 'weekday'
+  return getEffectiveBillingDayType(settlementTimestamp || Date.now())
 }
 
 function calculateTimerBestPrice(elapsedMinutes, requestedBillingType, rules, timerDayType, settlementTimestamp, packagePlan = '') {
@@ -406,4 +426,5 @@ export function buildConsumptionDescription(meta = {}, calcResult = {}, notes = 
 }
 
 export { DEFAULT_BILLING_RULES }
+
 

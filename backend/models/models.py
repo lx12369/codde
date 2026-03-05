@@ -24,6 +24,25 @@ class User(db.Model):
         }
 
 
+class RevokedToken(db.Model):
+    __tablename__ = 'revoked_tokens'
+
+    id = db.Column(db.Integer, primary_key=True)
+    jti = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    user_id = db.Column(db.Integer)
+    revoked_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = db.Column(db.DateTime)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'jti': self.jti,
+            'user_id': self.user_id,
+            'revoked_at': self.revoked_at.isoformat() if self.revoked_at else None,
+            'expires_at': self.expires_at.isoformat() if self.expires_at else None
+        }
+
+
 class Customer(db.Model):
     __tablename__ = 'customers'
 
@@ -154,6 +173,7 @@ class ActiveTimer(db.Model):
 
     id = db.Column(db.String(20), primary_key=True)
     customer_id = db.Column(db.String(10), db.ForeignKey('customers.id'), nullable=False)
+    table_no = db.Column(db.String(30))
     start_time = db.Column(db.DateTime, nullable=False)
     timer_type = db.Column(db.String(50))
     notes = db.Column(db.String(255))
@@ -164,10 +184,129 @@ class ActiveTimer(db.Model):
         return {
             'id': self.id,
             'customer_id': self.customer_id,
+            'table_no': self.table_no,
             'start_time': self.start_time.isoformat() if self.start_time else None,
             'timer_type': self.timer_type,
             'notes': self.notes,
             'status': self.status,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
+
+class BeadMaterial(db.Model):
+    __tablename__ = 'bead_materials'
+
+    id = db.Column(db.String(10), primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    color_code = db.Column(db.String(20))
+    spec = db.Column(db.String(50))
+    brand = db.Column(db.String(50))
+    unit = db.Column(db.String(20), default='gram', nullable=False)
+    grams_per_bag = db.Column(db.Float)
+    grams_per_bottle = db.Column(db.Float)
+    market_price_per_500g = db.Column(db.Float, default=50.0, nullable=False)
+    safe_stock = db.Column(db.Float, default=0.0, nullable=False)
+    common_color = db.Column(db.Boolean, default=False, nullable=False)
+    status = db.Column(db.String(20), default='active', nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    balance = db.relationship('BeadInventoryBalance', backref='material', uselist=False, lazy=True)
+    ledger_entries = db.relationship('BeadInventoryLedger', backref='material', lazy=True)
+    stocktakes = db.relationship('BeadStocktake', backref='material', lazy=True)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'color_code': self.color_code,
+            'spec': self.spec,
+            'brand': self.brand,
+            'unit': self.unit,
+            'grams_per_bag': self.grams_per_bag,
+            'grams_per_bottle': self.grams_per_bottle,
+            'market_price_per_500g': float(self.market_price_per_500g or 0.0),
+            'safe_stock': float(self.safe_stock or 0.0),
+            'common_color': bool(self.common_color),
+            'status': self.status,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+        }
+
+
+class BeadInventoryBalance(db.Model):
+    __tablename__ = 'bead_inventory_balances'
+
+    id = db.Column(db.Integer, primary_key=True)
+    material_id = db.Column(db.String(10), db.ForeignKey('bead_materials.id'), nullable=False, unique=True)
+    current_grams = db.Column(db.Float, default=0.0, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        current = float(self.current_grams or 0.0)
+        return {
+            'id': self.id,
+            'material_id': self.material_id,
+            'current_grams': current,
+            'available_grams': current,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+        }
+
+
+class BeadInventoryLedger(db.Model):
+    __tablename__ = 'bead_inventory_ledgers'
+
+    id = db.Column(db.String(32), primary_key=True)
+    material_id = db.Column(db.String(10), db.ForeignKey('bead_materials.id'), nullable=False, index=True)
+    action_type = db.Column(db.String(30), nullable=False, index=True)
+    delta_grams = db.Column(db.Float, nullable=False)
+    balance_after_grams = db.Column(db.Float, nullable=False)
+    unit_input = db.Column(db.String(20), default='gram')
+    unit_count = db.Column(db.Float)
+    reference_no = db.Column(db.String(32), index=True)
+    reason = db.Column(db.String(100))
+    note = db.Column(db.String(255))
+    operator = db.Column(db.String(50))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'material_id': self.material_id,
+            'action_type': self.action_type,
+            'delta_grams': float(self.delta_grams or 0.0),
+            'balance_after_grams': float(self.balance_after_grams or 0.0),
+            'unit_input': self.unit_input,
+            'unit_count': self.unit_count,
+            'reference_no': self.reference_no,
+            'reason': self.reason,
+            'note': self.note,
+            'operator': self.operator,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
+
+class BeadStocktake(db.Model):
+    __tablename__ = 'bead_stocktakes'
+
+    id = db.Column(db.String(32), primary_key=True)
+    material_id = db.Column(db.String(10), db.ForeignKey('bead_materials.id'), nullable=False, index=True)
+    previous_grams = db.Column(db.Float, nullable=False)
+    counted_grams = db.Column(db.Float, nullable=False)
+    difference_grams = db.Column(db.Float, nullable=False)
+    note = db.Column(db.String(255))
+    operator = db.Column(db.String(50))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'material_id': self.material_id,
+            'previous_grams': float(self.previous_grams or 0.0),
+            'counted_grams': float(self.counted_grams or 0.0),
+            'difference_grams': float(self.difference_grams or 0.0),
+            'note': self.note,
+            'operator': self.operator,
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 

@@ -1,6 +1,7 @@
 ﻿from datetime import date, datetime
 from flask import Blueprint, request
 from models.models import db, Customer, Balance, Transaction, ActiveTimer
+from utils.audit_log import get_operator_name, write_log
 from utils.decorators import token_required
 from utils.response import success_response, error_response, paginated_response
 
@@ -45,6 +46,10 @@ def _customer_to_dict(customer, balance_map=None):
     data['balance'] = current_balance
     data['current_balance'] = current_balance
     return data
+
+
+def _birthday_text(value):
+    return value.isoformat() if value else '-'
 
 
 @customers_bp.route('', methods=['GET'])
@@ -159,6 +164,13 @@ def create_customer():
     )
     db.session.add(balance)
 
+    operator = get_operator_name()
+    write_log(
+        'customer_create',
+        f'创建客户：{name}（{customer_id}），手机号：{phone or "-"}',
+        operator=operator
+    )
+
     db.session.commit()
 
     return success_response(_customer_to_dict(customer, {customer_id: 0.0}), 'Customer created successfully', 201)
@@ -176,6 +188,11 @@ def update_customer(customer_id):
 
     if not data:
         return error_response('No data provided', 400)
+
+    before_name = customer.name
+    before_phone = customer.phone
+    before_wechat = customer.wechat
+    before_birthday = customer.birthday
 
     name = data.get('name')
     phone = data.get('phone')
@@ -199,6 +216,24 @@ def update_customer(customer_id):
         except ValueError:
             return error_response('Birthday must be in YYYY-MM-DD format', 400)
 
+    changes = []
+    if before_name != customer.name:
+        changes.append(f'姓名：{before_name or "-"} -> {customer.name or "-"}')
+    if before_phone != customer.phone:
+        changes.append(f'手机号：{before_phone or "-"} -> {customer.phone or "-"}')
+    if before_wechat != customer.wechat:
+        changes.append(f'微信号：{before_wechat or "-"} -> {customer.wechat or "-"}')
+    if before_birthday != customer.birthday:
+        changes.append(f'生日：{_birthday_text(before_birthday)} -> {_birthday_text(customer.birthday)}')
+
+    if changes:
+        operator = get_operator_name()
+        write_log(
+            'customer_update',
+            f'更新客户：{customer.name}（{customer.id}），变更：{"；".join(changes)}',
+            operator=operator
+        )
+
     db.session.commit()
 
     return success_response(_customer_to_dict(customer), 'Customer updated successfully')
@@ -214,9 +249,18 @@ def delete_customer(customer_id):
 
     try:
         # Stop running timers, but keep historical transactions.
+        ended_timers = ActiveTimer.query.filter_by(customer_id=customer_id).count()
         ActiveTimer.query.filter_by(customer_id=customer_id).delete(synchronize_session=False)
         customer.is_deleted = True
         customer.deleted_at = datetime.utcnow()
+
+        operator = get_operator_name()
+        write_log(
+            'customer_delete',
+            f'删除客户：{customer.name}（{customer_id}），结束计时器 {ended_timers} 个',
+            operator=operator
+        )
+
         db.session.commit()
     except Exception as e:
         db.session.rollback()

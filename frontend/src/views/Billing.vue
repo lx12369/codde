@@ -1,24 +1,28 @@
-﻿<script setup>
-import { ref, reactive, onMounted } from 'vue'
+<script setup>
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import api from '@/api'
 
 const loading = ref(false)
 const saving = ref(false)
-const showSuccess = ref(false)
+const feedback = reactive({
+  tone: 'info',
+  message: ''
+})
+let feedbackTimer = null
 
 const billingRules = reactive({
-  singlePersonOneHour: 0,
-  singlePersonTwoHours: 0,
-  overtimeBillingRule: '',
-  weekdaySingleUnlimited: 0,
-  weekdayDoubleUnlimited: 0,
-  weekdaySingleLimitedBoard: 0,
-  weekendSingleUnlimited: 0,
-  weekendDoubleUnlimited: 0,
-  weekendSingleLimitedBoard: 0,
-  largeImageExtra: 0,
-  excessSmallImage: 0,
-  excessLargeImage: 0
+  singlePersonOneHour: 18.9,
+  singlePersonTwoHours: 35.8,
+  weekdaySingleUnlimited: 53.9,
+  weekdayDoubleUnlimited: 103.9,
+  weekdaySingleLimitedBoard: 35.9,
+  weekendSingleUnlimited: 63.9,
+  weekendDoubleUnlimited: 123.9,
+  weekendSingleLimitedBoard: 42.8,
+  largeImageExtra: 5,
+  excessSmallImage: 3,
+  excessLargeImage: 5,
+  overtimeRatePerMinute: 0.5
 })
 
 const overtimeConfig = reactive({
@@ -27,6 +31,28 @@ const overtimeConfig = reactive({
   overtime30Fee: 18.9
 })
 
+function clearFeedbackTimer() {
+  if (!feedbackTimer) return
+  window.clearTimeout(feedbackTimer)
+  feedbackTimer = null
+}
+
+function showFeedback(tone, message) {
+  feedback.tone = tone
+  feedback.message = message
+  clearFeedbackTimer()
+  feedbackTimer = window.setTimeout(() => {
+    feedback.message = ''
+    feedbackTimer = null
+  }, 3600)
+}
+
+function getFeedbackClass(tone) {
+  if (tone === 'success') return 'management-feedback--success'
+  if (tone === 'error') return 'management-feedback--error'
+  return 'management-feedback--info'
+}
+
 function toNumber(value, fallback = 0) {
   const n = Number(value)
   return Number.isFinite(n) ? n : fallback
@@ -34,29 +60,38 @@ function toNumber(value, fallback = 0) {
 
 function assignFormNumber(key, value) {
   if (value === undefined || value === null || value === '') return
-  billingRules[key] = toNumber(value, billingRules[key])
+  billingRules[key] = Math.max(0, toNumber(value, billingRules[key]))
 }
 
 function isGroupedRulesPayload(data) {
-  return Boolean(data && typeof data === 'object' && (data.limited || data.weekday || data.weekend || data.materials))
+  return Boolean(data && typeof data === 'object' && (data.limited || data.weekday || data.weekend || data.materials || data.overtime))
 }
 
-function updateOvertimeRuleText() {
-  billingRules.overtimeBillingRule = `0-${overtimeConfig.overtimeFreeMinutes}分钟免费，${overtimeConfig.overtimeFreeMinutes}-30分钟加收${overtimeConfig.overtime10to30Fee}，30分钟以上每小时加收${overtimeConfig.overtime30Fee}`
-}
+const overtimeRuleSummary = computed(() => {
+  const freeMinutes = Math.max(0, Math.floor(toNumber(overtimeConfig.overtimeFreeMinutes, 10)))
+  const fee10to30 = Math.max(0, toNumber(overtimeConfig.overtime10to30Fee, 10))
+  const fee30Plus = Math.max(0, toNumber(overtimeConfig.overtime30Fee, toNumber(billingRules.singlePersonOneHour, 18.9)))
 
-function trySyncOvertimeConfigFromText() {
-  const text = String(billingRules.overtimeBillingRule || '')
-  const matches = text.match(/\d+(?:\.\d+)?/g)
-  if (!matches || matches.length < 3) return
+  return `0-${freeMinutes}分钟免费，${freeMinutes}-30分钟加收${fee10to30}，30分钟以上每小时加收${fee30Plus}`
+})
 
-  const freeMinutes = Math.floor(toNumber(matches[0], overtimeConfig.overtimeFreeMinutes))
-  const fee10to30 = toNumber(matches[1], overtimeConfig.overtime10to30Fee)
-  const fee30Plus = toNumber(matches[2], overtimeConfig.overtime30Fee)
+function trySyncOvertimeConfigFromLegacyText(text) {
+  if (text === undefined || text === null) return
+  const normalizedText = String(text)
 
-  overtimeConfig.overtimeFreeMinutes = Math.max(0, freeMinutes)
-  overtimeConfig.overtime10to30Fee = Math.max(0, fee10to30)
-  overtimeConfig.overtime30Fee = Math.max(0, fee30Plus)
+  const freeMatch = normalizedText.match(/0\s*-\s*(\d+(?:\.\d+)?)\s*分钟/)
+  const fee10to30Match = normalizedText.match(/(?:10\s*-\s*30\s*分钟|30\s*分钟内)[^\d]*(\d+(?:\.\d+)?)/)
+  const fee30PlusMatch = normalizedText.match(/30\s*分钟(?:以上|后)[^\d]*(\d+(?:\.\d+)?)/)
+
+  if (freeMatch?.[1] !== undefined) {
+    overtimeConfig.overtimeFreeMinutes = Math.max(0, Math.floor(toNumber(freeMatch[1], overtimeConfig.overtimeFreeMinutes)))
+  }
+  if (fee10to30Match?.[1] !== undefined) {
+    overtimeConfig.overtime10to30Fee = Math.max(0, toNumber(fee10to30Match[1], overtimeConfig.overtime10to30Fee))
+  }
+  if (fee30PlusMatch?.[1] !== undefined) {
+    overtimeConfig.overtime30Fee = Math.max(0, toNumber(fee30PlusMatch[1], overtimeConfig.overtime30Fee))
+  }
 }
 
 function applyGroupedRules(data = {}) {
@@ -64,6 +99,7 @@ function applyGroupedRules(data = {}) {
   const weekday = data.weekday || {}
   const weekend = data.weekend || {}
   const materials = data.materials || {}
+  const overtime = data.overtime || {}
 
   assignFormNumber('singlePersonOneHour', limited.price1h)
   assignFormNumber('singlePersonTwoHours', limited.price2h)
@@ -71,7 +107,6 @@ function applyGroupedRules(data = {}) {
   overtimeConfig.overtimeFreeMinutes = Math.max(0, Math.floor(toNumber(limited.overtimeFreeMinutes, overtimeConfig.overtimeFreeMinutes)))
   overtimeConfig.overtime10to30Fee = Math.max(0, toNumber(limited.overtime10to30Fee, overtimeConfig.overtime10to30Fee))
   overtimeConfig.overtime30Fee = Math.max(0, toNumber(limited.overtime30Fee, overtimeConfig.overtime30Fee))
-  updateOvertimeRuleText()
 
   assignFormNumber('weekdaySingleUnlimited', weekday.singleUnlimited)
   assignFormNumber('weekdayDoubleUnlimited', weekday.doubleUnlimited)
@@ -84,6 +119,7 @@ function applyGroupedRules(data = {}) {
   assignFormNumber('largeImageExtra', materials.largeImageFee)
   assignFormNumber('excessSmallImage', materials.extraSmallImageFee)
   assignFormNumber('excessLargeImage', materials.extraLargeImageFee)
+  assignFormNumber('overtimeRatePerMinute', overtime.ratePerMinute)
 }
 
 function applyLegacyFlatRules(data = {}) {
@@ -98,18 +134,27 @@ function applyLegacyFlatRules(data = {}) {
     'weekendSingleLimitedBoard',
     'largeImageExtra',
     'excessSmallImage',
-    'excessLargeImage'
+    'excessLargeImage',
+    'overtimeRatePerMinute'
   ]
 
   mappingKeys.forEach((key) => assignFormNumber(key, data[key]))
 
+  if (data.overtimeFreeMinutes !== undefined) {
+    overtimeConfig.overtimeFreeMinutes = Math.max(0, Math.floor(toNumber(data.overtimeFreeMinutes, overtimeConfig.overtimeFreeMinutes)))
+  }
+  if (data.overtime10to30Fee !== undefined) {
+    overtimeConfig.overtime10to30Fee = Math.max(0, toNumber(data.overtime10to30Fee, overtimeConfig.overtime10to30Fee))
+  }
+  if (data.overtime30Fee !== undefined) {
+    overtimeConfig.overtime30Fee = Math.max(0, toNumber(data.overtime30Fee, overtimeConfig.overtime30Fee))
+  }
   if (data.overtimeBillingRule !== undefined && data.overtimeBillingRule !== null) {
-    billingRules.overtimeBillingRule = String(data.overtimeBillingRule)
-    trySyncOvertimeConfigFromText()
+    trySyncOvertimeConfigFromLegacyText(data.overtimeBillingRule)
   }
 }
 
-const fetchBillingRules = async () => {
+async function fetchBillingRules() {
   loading.value = true
   try {
     const response = await api.get('/billing-rules')
@@ -122,16 +167,15 @@ const fetchBillingRules = async () => {
     }
   } catch (error) {
     console.error('获取计费规则失败:', error)
+    showFeedback('error', '计费规则加载失败，请稍后重试。')
   } finally {
     loading.value = false
   }
 }
 
-const saveBillingRules = async () => {
+async function saveBillingRules() {
   saving.value = true
   try {
-    trySyncOvertimeConfigFromText()
-
     const payload = {
       limited: {
         price1h: toNumber(billingRules.singlePersonOneHour),
@@ -154,18 +198,18 @@ const saveBillingRules = async () => {
         largeImageFee: toNumber(billingRules.largeImageExtra),
         extraSmallImageFee: toNumber(billingRules.excessSmallImage),
         extraLargeImageFee: toNumber(billingRules.excessLargeImage)
+      },
+      overtime: {
+        ratePerMinute: Math.max(0, toNumber(billingRules.overtimeRatePerMinute, 0.5))
       }
     }
 
     await api.put('/billing-rules', payload)
     await fetchBillingRules()
-
-    showSuccess.value = true
-    setTimeout(() => {
-      showSuccess.value = false
-    }, 3000)
+    showFeedback('success', '计费规则已保存。')
   } catch (error) {
     console.error('保存计费规则失败:', error)
+    showFeedback('error', error?.response?.data?.message || error?.message || '保存计费规则失败')
   } finally {
     saving.value = false
   }
@@ -174,39 +218,53 @@ const saveBillingRules = async () => {
 onMounted(() => {
   fetchBillingRules()
 })
+
+onUnmounted(() => {
+  clearFeedbackTimer()
+})
 </script>
 
 <template>
   <div class="space-y-6">
-    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-      <div>
-        <h1 class="text-2xl font-bold text-gray-800">计费规则</h1>
-        <p class="text-gray-500 mt-1">配置套餐与素材收费规则</p>
+    <section class="page-hero rounded-3xl p-6 sm:p-8">
+      <div class="relative z-10 flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+        <div class="max-w-2xl space-y-2">
+          <p class="page-hero__eyebrow">Pricing Workspace</p>
+          <h1 class="page-hero__title">计费规则</h1>
+        </div>
+
+        <button
+          @click="saveBillingRules"
+          :disabled="saving"
+          class="page-hero__action"
+        >
+          <svg v-if="saving" class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+          <svg v-else xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+          </svg>
+          <span>{{ saving ? '保存中...' : '保存规则' }}</span>
+        </button>
       </div>
-      <button
-        @click="saveBillingRules"
-        :disabled="saving"
-        class="inline-flex items-center px-4 py-2 bg-[#1e40af] text-white rounded-lg hover:bg-[#1e3a8a] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+    </section>
+
+    <Transition name="notice">
+      <div
+        v-if="feedback.message"
+        role="status"
+        aria-live="polite"
+        :class="['management-feedback flex items-center gap-2', getFeedbackClass(feedback.tone)]"
       >
-        <svg v-if="saving" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4" />
         </svg>
-        <svg v-else xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-        </svg>
-        保存规则
-      </button>
-    </div>
+        <span>{{ feedback.message }}</span>
+      </div>
+    </Transition>
 
-    <div v-if="showSuccess" class="bg-green-50 border border-green-200 rounded-lg p-4 flex items-center">
-      <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-green-500 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4" />
-      </svg>
-      <span class="text-green-700">保存成功</span>
-    </div>
-
-    <div v-if="loading" class="flex items-center justify-center py-12">
+    <div v-if="loading" class="management-surface flex items-center justify-center py-12">
       <svg class="animate-spin h-8 w-8 text-[#1e40af]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
         <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
@@ -214,67 +272,89 @@ onMounted(() => {
     </div>
 
     <div v-else class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      <div class="bg-white rounded-lg shadow-sm p-6 space-y-4">
-        <h2 class="text-lg font-semibold text-gray-800">限时套餐</h2>
+      <div class="management-surface p-6 space-y-4">
+        <h2 class="text-lg font-semibold text-slate-800">限时套餐</h2>
         <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">1小时价格</label>
-          <input v-model.number="billingRules.singlePersonOneHour" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+          <label class="block text-sm font-medium text-slate-700 mb-1">1小时价格</label>
+          <input v-model.number="billingRules.singlePersonOneHour" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500" />
         </div>
         <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">2小时价格</label>
-          <input v-model.number="billingRules.singlePersonTwoHours" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+          <label class="block text-sm font-medium text-slate-700 mb-1">2小时价格</label>
+          <input v-model.number="billingRules.singlePersonTwoHours" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500" />
         </div>
         <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">超时规则说明</label>
-          <textarea v-model="billingRules.overtimeBillingRule" rows="3" class="w-full px-3 py-2 border border-gray-300 rounded-lg"></textarea>
-        </div>
-      </div>
-
-      <div class="bg-white rounded-lg shadow-sm p-6 space-y-4">
-        <h2 class="text-lg font-semibold text-gray-800">工作日方案</h2>
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">单人不限时不限板</label>
-          <input v-model.number="billingRules.weekdaySingleUnlimited" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+          <label class="block text-sm font-medium text-slate-700 mb-1">超时免费分钟</label>
+          <input v-model.number="overtimeConfig.overtimeFreeMinutes" type="number" min="0" step="1" class="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500" />
         </div>
         <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">双人不限时不限板</label>
-          <input v-model.number="billingRules.weekdayDoubleUnlimited" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+          <label class="block text-sm font-medium text-slate-700 mb-1">超时10-30分钟加收</label>
+          <input v-model.number="overtimeConfig.overtime10to30Fee" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500" />
         </div>
         <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">单人不限时限板</label>
-          <input v-model.number="billingRules.weekdaySingleLimitedBoard" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+          <label class="block text-sm font-medium text-slate-700 mb-1">超时30分钟后每小时加收</label>
+          <input v-model.number="overtimeConfig.overtime30Fee" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-700 mb-1">超时规则说明</label>
+          <p class="px-3 py-2 bg-sky-50 border border-sky-100 rounded-xl text-sm text-slate-700">
+            {{ overtimeRuleSummary }}
+          </p>
         </div>
       </div>
 
-      <div class="bg-white rounded-lg shadow-sm p-6 space-y-4">
-        <h2 class="text-lg font-semibold text-gray-800">周末方案</h2>
+      <div class="management-surface p-6 space-y-4">
+        <h2 class="text-lg font-semibold text-slate-800">工作日方案</h2>
         <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">单人不限时不限板</label>
-          <input v-model.number="billingRules.weekendSingleUnlimited" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+          <label class="block text-sm font-medium text-slate-700 mb-1">单人不限时不限板</label>
+          <input v-model.number="billingRules.weekdaySingleUnlimited" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500" />
         </div>
         <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">双人不限时不限板</label>
-          <input v-model.number="billingRules.weekendDoubleUnlimited" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+          <label class="block text-sm font-medium text-slate-700 mb-1">双人不限时不限板</label>
+          <input v-model.number="billingRules.weekdayDoubleUnlimited" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500" />
         </div>
         <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">单人不限时限板</label>
-          <input v-model.number="billingRules.weekendSingleLimitedBoard" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+          <label class="block text-sm font-medium text-slate-700 mb-1">单人不限时限板</label>
+          <input v-model.number="billingRules.weekdaySingleLimitedBoard" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500" />
         </div>
       </div>
 
-      <div class="bg-white rounded-lg shadow-sm p-6 space-y-4">
-        <h2 class="text-lg font-semibold text-gray-800">素材费用</h2>
+      <div class="management-surface p-6 space-y-4">
+        <h2 class="text-lg font-semibold text-slate-800">周末方案</h2>
         <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">大图加收</label>
-          <input v-model.number="billingRules.largeImageExtra" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+          <label class="block text-sm font-medium text-slate-700 mb-1">单人不限时不限板</label>
+          <input v-model.number="billingRules.weekendSingleUnlimited" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500" />
         </div>
         <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">超量小图加收</label>
-          <input v-model.number="billingRules.excessSmallImage" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+          <label class="block text-sm font-medium text-slate-700 mb-1">双人不限时不限板</label>
+          <input v-model.number="billingRules.weekendDoubleUnlimited" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500" />
         </div>
         <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">超量大图加收</label>
-          <input v-model.number="billingRules.excessLargeImage" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-gray-300 rounded-lg" />
+          <label class="block text-sm font-medium text-slate-700 mb-1">单人不限时限板</label>
+          <input v-model.number="billingRules.weekendSingleLimitedBoard" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+      </div>
+
+      <div class="management-surface p-6 space-y-4">
+        <h2 class="text-lg font-semibold text-slate-800">素材费用</h2>
+        <div>
+          <label class="block text-sm font-medium text-slate-700 mb-1">大图加收</label>
+          <input v-model.number="billingRules.largeImageExtra" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-700 mb-1">超量小图加收</label>
+          <input v-model.number="billingRules.excessSmallImage" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-700 mb-1">超量大图加收</label>
+          <input v-model.number="billingRules.excessLargeImage" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+      </div>
+
+      <div class="management-surface p-6 space-y-4 lg:col-span-2">
+        <h2 class="text-lg font-semibold text-slate-800">加班费用</h2>
+        <div class="max-w-sm">
+          <label class="block text-sm font-medium text-slate-700 mb-1">每分钟费用</label>
+          <input v-model.number="billingRules.overtimeRatePerMinute" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500" />
         </div>
       </div>
     </div>
@@ -283,4 +363,5 @@ onMounted(() => {
 
 <style scoped>
 </style>
+
 

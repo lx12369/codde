@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { clearAuthStorage, getAuthToken } from '@/utils/authStorage'
 
 const api = axios.create({
   baseURL: '/api',
@@ -10,7 +11,7 @@ const api = axios.create({
 
 api.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('token') || sessionStorage.getItem('token')
+    const token = getAuthToken()
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
     }
@@ -26,11 +27,12 @@ api.interceptors.response.use(
     return response.data
   },
   (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('token')
-      localStorage.removeItem('user')
-      sessionStorage.removeItem('token')
-      sessionStorage.removeItem('user')
+    const status = error.response?.status
+    const requestUrl = String(error.config?.url || '')
+    const isLoginRequest = requestUrl.includes('/auth/login')
+
+    if (status === 401 && !isLoginRequest) {
+      clearAuthStorage()
       window.location.href = '/login'
     }
     return Promise.reject(error)
@@ -39,6 +41,7 @@ api.interceptors.response.use(
 
 export const authApi = {
   login: (data) => api.post('/auth/login', data),
+  logout: () => api.post('/auth/logout'),
   changePassword: (data) => api.put('/auth/password', data)
 }
 
@@ -49,6 +52,14 @@ export const customerApi = {
   updateCustomer: (id, data) => api.put(`/customers/${id}`, data),
   deleteCustomer: (id) => api.delete(`/customers/${id}`),
   getCustomerBalance: (id) => api.get(`/customers/${id}/balance`)
+}
+
+export const employeeApi = {
+  getEmployees: (params) => api.get('/employees', { params }),
+  createEmployee: (data) => api.post('/employees', data),
+  updateEmployee: (id, data) => api.put(`/employees/${id}`, data),
+  resetEmployeePassword: (id, data) => api.put(`/employees/${id}/reset-password`, data),
+  deleteEmployee: (id) => api.delete(`/employees/${id}`)
 }
 
 export const transactionApi = {
@@ -79,8 +90,26 @@ export const timerApi = {
 
 export const dashboardApi = {
   getStats: () => api.get('/dashboard/stats'),
+  getWeatherToday: () => api.get('/dashboard/weather/today'),
   getCharts: (params) => api.get('/dashboard/charts', { params }),
   getRecentActivities: (params) => api.get('/dashboard/recent-activities', { params })
+}
+
+export const beadInventoryApi = {
+  getMaterials: (params) => api.get('/bead-inventory/materials', { params }),
+  importMardPalette: () => api.post('/bead-inventory/materials/import-mard'),
+  batchUpdateConversionStandard: (data) => api.post('/bead-inventory/materials/batch-conversion-standard', data),
+  batchUpdateMarketPrice: (data) => api.post('/bead-inventory/materials/batch-market-price', data),
+  batchUpdateSafeStockByCommonColor: (data) => api.post('/bead-inventory/materials/batch-safe-stock-by-common-color', data),
+  createMaterial: (data) => api.post('/bead-inventory/materials', data),
+  updateMaterial: (id, data) => api.put(`/bead-inventory/materials/${id}`, data),
+  deleteMaterial: (id) => api.delete(`/bead-inventory/materials/${id}`),
+  getBalances: (params) => api.get('/bead-inventory/balances', { params }),
+  createInbound: (data) => api.post('/bead-inventory/inbound', data),
+  createOutbound: (data) => api.post('/bead-inventory/outbound', data),
+  createStocktake: (data) => api.post('/bead-inventory/stocktake', data),
+  getLedger: (params) => api.get('/bead-inventory/ledger', { params }),
+  getAlerts: () => api.get('/bead-inventory/alerts')
 }
 
 export const dataApi = {

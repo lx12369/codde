@@ -1,7 +1,15 @@
-﻿<script setup>
-import { ref, reactive, computed, onMounted, watch } from 'vue'
+<script setup>
+import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '@/api'
+import { formatServerDateTime } from '@/utils/dateTime'
+import { useBackdropClose } from '@/utils/modalBackdrop'
+import TimerConsumeDialog from '@/components/timers/TimerConsumeDialog.vue'
+import {
+  createTimerConsumeForm,
+  validateTimerConsumeForm as validateSharedTimerConsumeForm,
+  buildTimerConsumeRequestPayload
+} from '@/utils/timerConsume'
 import {
   normalizeBillingRules,
   calculateConsumptionAmount,
@@ -13,6 +21,7 @@ import {
 
 const route = useRoute()
 const router = useRouter()
+const { onBackdropMouseDown, onBackdropMouseUp } = useBackdropClose()
 
 const loading = ref(false)
 const cancellingTransactionId = ref('')
@@ -21,7 +30,7 @@ const customers = ref([])
 const activities = ref([])
 const total = ref(0)
 const currentPage = ref(1)
-const pageSize = ref(10)
+const pageSize = ref(15)
 
 const filterForm = reactive({
   type: '',
@@ -33,7 +42,14 @@ const filterForm = reactive({
 const showRechargeDialog = ref(false)
 const showConsumeDialog = ref(false)
 const showDetailDialog = ref(false)
+const showCancelConfirmDialog = ref(false)
 const selectedTransaction = ref(null)
+const cancelTargetTransaction = ref(null)
+const cancelConfirmButtonRef = ref(null)
+const rechargeCustomerSelectRef = ref(null)
+const manualConsumeCustomerSelectRef = ref(null)
+const detailCloseButtonRef = ref(null)
+const dialogTriggerStack = ref([])
 
 const rechargeForm = reactive({
   customerId: '',
@@ -67,29 +83,27 @@ const autoConsumeForm = reactive({
   meituanCustomer: false
 })
 
-const timerConsumeForm = reactive({
-  customerId: '',
-  timerType: 'limited',
-  packagePlan: 'limited1h',
-  largeImages: 0,
-  extraSmallImages: 0,
-  extraLargeImages: 0,
-  notes: ''
-})
+const timerConsumeForm = reactive(createTimerConsumeForm())
 
 const rechargeErrors = ref({})
 const manualConsumeErrors = ref({})
 const autoConsumeErrors = ref({})
 const timerConsumeErrors = ref({})
+const feedback = reactive({
+  tone: 'info',
+  message: ''
+})
 
 const consumeCurrentBalance = ref(null)
 const consumeBalanceLoading = ref(false)
 const billingRules = ref(normalizeBillingRules())
+let feedbackTimer = null
 
 const transactionTypes = [
   { value: '', label: '全部' },
   { value: 'recharge', label: '充值' },
-  { value: 'consumption', label: '消费' }
+  { value: 'consumption', label: '消费' },
+  { value: 'bead_purchase', label: '买豆支出' }
 ]
 
 const paymentMethods = [
@@ -105,37 +119,25 @@ const consumeModes = [
   { value: 'timer', label: '计时消费' }
 ]
 
-const timerTypeOptions = [
-  { value: 'limited', label: '限时套餐' },
-  { value: 'weekday', label: '工作日套餐' },
-  { value: 'weekend', label: '周末套餐' }
-]
-
-const timerPackagePlanOptionsByType = {
-  limited: [
-    { value: 'limited1h', label: '限时1小时' },
-    { value: 'limited2h', label: '限时2小时' }
-  ],
-  weekday: [
-    { value: 'weekdaySingleUnlimited', label: '工作日单人不限时不限板' },
-    { value: 'weekdayDoubleUnlimited', label: '工作日双人不限时不限板' },
-    { value: 'weekdaySingleLimited', label: '工作日单人不限时限板' }
-  ],
-  weekend: [
-    { value: 'weekendSingleUnlimited', label: '周末单人不限时不限板' },
-    { value: 'weekendDoubleUnlimited', label: '周末双人不限时不限板' },
-    { value: 'weekendSingleLimited', label: '周末单人不限时限板' }
-  ]
-}
-
-const timerPackagePlanOptions = computed(() => timerPackagePlanOptionsByType[timerConsumeForm.timerType] || [])
-
-function getDefaultTimerPackagePlan(timerType = 'limited') {
-  const options = timerPackagePlanOptionsByType[timerType] || timerPackagePlanOptionsByType.limited
-  return options[0]?.value || 'limited1h'
-}
-
+const pageSizeOptions = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
 const totalPages = computed(() => Math.ceil(total.value / pageSize.value) || 1)
+const feedbackClass = computed(() => {
+  if (feedback.tone === 'success') return 'border-emerald-200 bg-emerald-50 text-emerald-800'
+  if (feedback.tone === 'error') return 'border-rose-200 bg-rose-50 text-rose-800'
+  return 'border-sky-200 bg-sky-50 text-sky-800'
+})
+const visiblePages = computed(() => {
+  const pages = []
+  for (let page = 1; page <= totalPages.value; page += 1) {
+    const shouldShow = page === 1 || page === totalPages.value || Math.abs(page - currentPage.value) <= 1
+    if (shouldShow) {
+      pages.push(page)
+    } else if (pages[pages.length - 1] !== '...') {
+      pages.push('...')
+    }
+  }
+  return pages
+})
 
 const customerMap = computed(() => {
   const map = new Map()
@@ -217,10 +219,14 @@ const normalizeTransaction = (transaction = {}) => ({
   ...transaction,
   type: transaction.type === 'consume' ? 'consumption' : transaction.type,
   customerId: transaction.customerId ?? transaction.customer_id ?? '',
+  customerName: transaction.customerName ?? transaction.customer_name ?? '',
+  customerPhone: transaction.customerPhone ?? transaction.customer_phone ?? '',
+  customerWechat: transaction.customerWechat ?? transaction.customer_wechat ?? '',
   bonusAmount: transaction.bonusAmount ?? transaction.bonus_amount ?? 0,
   paymentMethod: transaction.paymentMethod ?? transaction.payment_method ?? '',
   activityId: transaction.activityId ?? transaction.activity_id ?? null,
   createdAt: transaction.createdAt ?? transaction.created_at ?? transaction.transaction_time ?? null,
+  operatorName: transaction.operatorName ?? transaction.operator_name ?? '',
   status: transaction.status ?? 'completed'
 })
 
@@ -243,6 +249,73 @@ const validCustomers = computed(() =>
 
 function formatAmount(amount) {
   return parseFloat(amount || 0).toFixed(2)
+}
+
+function formatFilterDateLabel(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return '年-月-日'
+  const parts = raw.split('-')
+  if (parts.length !== 3) return raw
+
+  const [year, month, day] = parts
+  const yearNum = Number.parseInt(year, 10)
+  const monthNum = Number.parseInt(month, 10)
+  const dayNum = Number.parseInt(day, 10)
+
+  if (!Number.isFinite(yearNum) || !Number.isFinite(monthNum) || !Number.isFinite(dayNum)) {
+    return raw
+  }
+
+  return `${yearNum}年${monthNum}月${dayNum}日`
+}
+
+function applyTimerConsumeForm(nextForm = {}) {
+  Object.assign(timerConsumeForm, createTimerConsumeForm(), nextForm)
+}
+
+
+function clearFeedbackTimer() {
+  if (!feedbackTimer) return
+  window.clearTimeout(feedbackTimer)
+  feedbackTimer = null
+}
+
+function showFeedback(tone, message, { persist = false } = {}) {
+  feedback.tone = tone
+  feedback.message = message
+  clearFeedbackTimer()
+  if (!persist) {
+    feedbackTimer = window.setTimeout(() => {
+      feedback.message = ''
+      feedbackTimer = null
+    }, 4500)
+  }
+}
+
+function rememberDialogTrigger() {
+  const activeElement = document.activeElement
+  if (
+    activeElement instanceof HTMLElement &&
+    activeElement !== document.body &&
+    activeElement !== document.documentElement
+  ) {
+    const stack = dialogTriggerStack.value
+    const lastElement = stack[stack.length - 1]
+    if (lastElement !== activeElement) {
+      stack.push(activeElement)
+    }
+  }
+}
+
+function restoreDialogTrigger() {
+  const stack = dialogTriggerStack.value
+  while (stack.length > 0) {
+    const element = stack.pop()
+    if (element && document.contains(element)) {
+      element.focus()
+      return
+    }
+  }
 }
 
 async function fetchTransactions() {
@@ -277,6 +350,7 @@ async function fetchTransactions() {
     console.error('Failed to fetch transactions:', error)
     transactions.value = []
     total.value = 0
+    showFeedback('error', '获取交易记录失败，请稍后重试。')
   } finally {
     loading.value = false
   }
@@ -405,13 +479,7 @@ function resetConsumeForms(customerId = '') {
   autoConsumeForm.notes = ''
   autoConsumeForm.meituanCustomer = false
 
-  timerConsumeForm.customerId = customerId
-  timerConsumeForm.timerType = 'limited'
-  timerConsumeForm.packagePlan = getDefaultTimerPackagePlan('limited')
-  timerConsumeForm.largeImages = 0
-  timerConsumeForm.extraSmallImages = 0
-  timerConsumeForm.extraLargeImages = 0
-  timerConsumeForm.notes = ''
+  Object.assign(timerConsumeForm, createTimerConsumeForm(customerId))
 
   manualConsumeErrors.value = {}
   autoConsumeErrors.value = {}
@@ -432,17 +500,38 @@ async function handleReset() {
   await fetchTransactions()
 }
 
-function handleExport() {
-  console.log('Export transactions')
-}
-
 async function handlePageChange(page) {
   if (page < 1 || page > totalPages.value) return
   currentPage.value = page
   await fetchTransactions()
 }
 
+async function handlePageSizeChange() {
+  currentPage.value = 1
+  await fetchTransactions()
+}
+
+function closeRechargeDialog(force = false) {
+  if (!force && loading.value) return
+  showRechargeDialog.value = false
+  restoreDialogTrigger()
+}
+
+function closeConsumeDialog(force = false) {
+  if (!force && loading.value) return
+  showConsumeDialog.value = false
+  restoreDialogTrigger()
+}
+
+function closeDetailDialog(force = false) {
+  if (!force && loading.value) return
+  showDetailDialog.value = false
+  selectedTransaction.value = null
+  restoreDialogTrigger()
+}
+
 async function openRechargeDialog(customerId = '') {
+  rememberDialogTrigger()
   rechargeForm.customerId = await refreshCustomersAndResolveCustomerId(customerId)
   rechargeForm.amount = ''
   rechargeForm.bonusAmount = ''
@@ -450,12 +539,17 @@ async function openRechargeDialog(customerId = '') {
   rechargeForm.activityId = ''
   rechargeErrors.value = {}
   showRechargeDialog.value = true
+  await nextTick()
+  rechargeCustomerSelectRef.value?.focus()
 }
 
 async function openConsumeDialog(customerId = '') {
+  rememberDialogTrigger()
   const validCustomerId = await refreshCustomersAndResolveCustomerId(customerId)
   resetConsumeForms(validCustomerId)
   showConsumeDialog.value = true
+  await nextTick()
+  manualConsumeCustomerSelectRef.value?.focus()
   await Promise.all([fetchBillingRules(), syncConsumeBalance(validCustomerId)])
 }
 
@@ -506,22 +600,10 @@ function validateAutoConsumeForm() {
   return Object.keys(errors).length === 0
 }
 
-function validateTimerConsumeForm() {
-  const errors = {}
-  if (!timerConsumeForm.customerId) {
-    errors.customerId = '请选择客户'
-  } else if (!validCustomers.value.some((customer) => customer.id === timerConsumeForm.customerId)) {
-    errors.customerId = '请选择有效客户'
-  }
-  if (!timerConsumeForm.timerType) {
-    errors.timerType = '请选择计时类型'
-  }
-  if (!timerConsumeForm.packagePlan) {
-    errors.packagePlan = '请选择套餐方案'
-  }
-
+function validateTimerConsumeFormState() {
+  const { isValid, errors } = validateSharedTimerConsumeForm(timerConsumeForm, validCustomers.value)
   timerConsumeErrors.value = errors
-  return Object.keys(errors).length === 0
+  return isValid
 }
 
 async function submitRecharge() {
@@ -538,11 +620,12 @@ async function submitRecharge() {
       payment_method: rechargeForm.paymentMethod,
       activity_id: rechargeForm.activityId || null
     })
-    showRechargeDialog.value = false
+    closeRechargeDialog(true)
     await Promise.all([fetchTransactions(), fetchCustomers()])
+    showFeedback('success', '充值记录已创建。')
   } catch (error) {
     console.error('Failed to create recharge:', error)
-    alert(error?.response?.data?.message || error?.message || '创建充值记录失败')
+    showFeedback('error', error?.response?.data?.message || error?.message || '创建充值记录失败')
   } finally {
     loading.value = false
   }
@@ -559,12 +642,12 @@ async function submitManualConsume() {
       ...manualConsumeErrors.value,
       amount: '余额不足'
     }
-    alert('客户余额不足')
+    showFeedback('error', '客户余额不足')
     return
   }
 
   const description = manualConsumeForm.meituanCustomer
-    ? `${manualConsumeForm.description} - 美团客户(抽成¥${formatAmount(manualMeituanDeduction.value)})`
+    ? `${manualConsumeForm.description} - 美团客户(抽成￥${formatAmount(manualMeituanDeduction.value)})`
     : manualConsumeForm.description
 
   await api.post('/transactions/consumption', {
@@ -584,7 +667,7 @@ async function submitAutoConsume() {
       ...autoConsumeErrors.value,
       total: '余额不足，无法结算'
     }
-    alert('客户余额不足')
+    showFeedback('error', '客户余额不足')
     return
   }
 
@@ -595,7 +678,7 @@ async function submitAutoConsume() {
     },
     autoConsumePreview.value,
     autoConsumeForm.meituanCustomer
-      ? `${autoConsumeForm.notes || ''}${autoConsumeForm.notes ? '；' : ''}美团客户(基础费用抽成¥${formatAmount(autoMeituanDeduction.value)})`
+      ? `${autoConsumeForm.notes || ''}${autoConsumeForm.notes ? '；' : ''}美团客户(基础费用抽成￥${formatAmount(autoMeituanDeduction.value)})`
       : autoConsumeForm.notes
   )
 
@@ -607,52 +690,43 @@ async function submitAutoConsume() {
 }
 
 async function submitTimerConsume() {
-  if (!validateTimerConsumeForm()) return
+  if (!validateTimerConsumeFormState()) return
 
-  const notesPayload = JSON.stringify({
-    note: timerConsumeForm.notes || '',
-    packagePlan: timerConsumeForm.packagePlan || getDefaultTimerPackagePlan(timerConsumeForm.timerType),
-    materials: {
-      largeImages: Number(timerConsumeForm.largeImages) || 0,
-      extraSmallImages: Number(timerConsumeForm.extraSmallImages) || 0,
-      extraLargeImages: Number(timerConsumeForm.extraLargeImages) || 0
-    }
-  })
-
-  await api.post('/active-timers', {
-    customer_id: timerConsumeForm.customerId,
-    timer_type: timerConsumeForm.timerType,
-    notes: notesPayload
-  })
-
-  alert('计时消费已开始，请到“正在计时”页面完成结算')
+  await api.post('/active-timers', buildTimerConsumeRequestPayload(timerConsumeForm))
 }
 
 async function submitConsumeByMode() {
+  const currentMode = consumeMode.value
   loading.value = true
   try {
-    if (consumeMode.value === 'manual') {
+    if (currentMode === 'manual') {
       await submitManualConsume()
-    } else if (consumeMode.value === 'auto') {
+      showFeedback('success', '消费记录已创建。')
+    } else if (currentMode === 'auto') {
       await submitAutoConsume()
+      showFeedback('success', '自动结算已完成。')
     } else {
       await submitTimerConsume()
+      showFeedback('success', '计时消费已开始，请到“正在计时”页面完成结算。')
     }
 
-    showConsumeDialog.value = false
+    closeConsumeDialog(true)
     await Promise.all([fetchTransactions(), fetchCustomers()])
   } catch (error) {
     console.error('Failed to handle consume action:', error)
-    alert(error?.response?.data?.message || error?.message || '消费操作失败')
+    showFeedback('error', error?.response?.data?.message || error?.message || '消费操作失败')
   } finally {
     loading.value = false
     await syncConsumeBalance(activeConsumeCustomerId.value)
   }
 }
 
-function viewTransactionDetail(transaction) {
+async function viewTransactionDetail(transaction) {
+  rememberDialogTrigger()
   selectedTransaction.value = normalizeTransaction(transaction)
   showDetailDialog.value = true
+  await nextTick()
+  detailCloseButtonRef.value?.focus()
 }
 
 function isCancellingTransaction(transactionId = '') {
@@ -663,25 +737,36 @@ async function cancelTransaction(transaction) {
   const normalized = normalizeTransaction(transaction)
   if (!normalized?.id) return
 
-  const confirmed = window.confirm(
-    `确认取消该笔${getTransactionTypeLabel(normalized.type)}记录？\n` +
-    `交易ID：#${normalized.id}\n` +
-    `金额：¥${formatAmount(normalized.amount)}\n` +
-    '取消后会自动回滚客户余额。'
-  )
-  if (!confirmed) return
+  rememberDialogTrigger()
+  cancelTargetTransaction.value = normalized
+  showCancelConfirmDialog.value = true
+  await nextTick()
+  cancelConfirmButtonRef.value?.focus()
+}
+
+function closeCancelConfirmDialog(force = false) {
+  if (!force && cancelTargetTransaction.value && isCancellingTransaction(cancelTargetTransaction.value.id)) return
+  showCancelConfirmDialog.value = false
+  cancelTargetTransaction.value = null
+  restoreDialogTrigger()
+}
+
+async function confirmCancelTransaction() {
+  const normalized = normalizeTransaction(cancelTargetTransaction.value)
+  if (!normalized?.id) return
 
   cancellingTransactionId.value = normalized.id
   try {
     await api.post(`/transactions/${normalized.id}/cancel`)
+    closeCancelConfirmDialog(true)
     if (selectedTransaction.value?.id === normalized.id) {
-      showDetailDialog.value = false
-      selectedTransaction.value = null
+      closeDetailDialog(true)
     }
     await Promise.all([fetchTransactions(), fetchCustomers()])
+    showFeedback('success', `已取消交易 #${normalized.id}`)
   } catch (error) {
     console.error('Failed to cancel transaction:', error)
-    alert(error?.response?.data?.message || error?.message || '取消交易失败')
+    showFeedback('error', error?.response?.data?.message || error?.message || '取消交易失败')
   } finally {
     cancellingTransactionId.value = ''
   }
@@ -690,7 +775,8 @@ async function cancelTransaction(transaction) {
 function getTransactionTypeLabel(type) {
   const typeMap = {
     recharge: '充值',
-    consumption: '消费'
+    consumption: '消费',
+    bead_purchase: '买豆支出'
   }
   return typeMap[type] || type || '-'
 }
@@ -698,9 +784,26 @@ function getTransactionTypeLabel(type) {
 function getTransactionTypeClass(type) {
   const classMap = {
     recharge: 'bg-green-100 text-green-800',
-    consumption: 'bg-orange-100 text-orange-800'
+    consumption: 'bg-orange-100 text-orange-800',
+    bead_purchase: 'bg-rose-100 text-rose-800'
   }
   return classMap[type] || 'bg-gray-100 text-gray-800'
+}
+
+function isIncomeTransaction(type) {
+  return type === 'recharge'
+}
+
+function getTransactionAmountClass(type) {
+  return isIncomeTransaction(type) ? 'text-emerald-600' : 'text-amber-600'
+}
+
+function getTransactionAmountPrefix(type) {
+  return isIncomeTransaction(type) ? '+' : '-'
+}
+
+function canCancelTransaction(type) {
+  return type === 'recharge' || type === 'consumption' || type === 'bead_purchase'
 }
 
 function getStatusLabel(status) {
@@ -722,13 +825,8 @@ function getStatusClass(status) {
 }
 
 function formatDateTime(dateTime) {
-  if (!dateTime) return '-'
-  return new Date(dateTime).toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
+  return formatServerDateTime(dateTime, {
+    hour12: false
   })
 }
 
@@ -737,6 +835,7 @@ function getCustomerName(transaction) {
   return (
     transaction.customer?.name ||
     transaction.customerName ||
+    transaction.customer_name ||
     customerMap.value.get(customerId)?.name ||
     '-'
   )
@@ -752,11 +851,66 @@ function getCustomerPhone(transaction) {
   )
 }
 
+function getCustomerWechat(transaction) {
+  const customerId = transaction.customerId || transaction.customer_id
+  return (
+    transaction.customer?.wechat ||
+    transaction.customerWechat ||
+    transaction.customer_wechat ||
+    customerMap.value.get(customerId)?.wechat ||
+    '-'
+  )
+}
+
+function getOperatorName(transaction) {
+  const directOperator = transaction?.operator
+  if (typeof directOperator === 'string') {
+    const name = directOperator.trim()
+    if (name) return name
+  } else if (directOperator && typeof directOperator === 'object') {
+    const nestedName = directOperator.name ?? directOperator.username ?? directOperator.id
+    const parsedName = String(nestedName || '').trim()
+    if (parsedName) return parsedName
+  }
+
+  const fallbackName = String(
+    transaction?.operatorName ?? transaction?.operator_name ?? ''
+  ).trim()
+  return fallbackName || '-'
+}
+
 function clearRouteActionQuery() {
   const query = { ...route.query }
   delete query.action
   delete query.customerId
   router.replace({ query })
+}
+
+function handleGlobalKeydown(event) {
+  if (event.key !== 'Escape') return
+
+  if (showCancelConfirmDialog.value) {
+    event.preventDefault()
+    closeCancelConfirmDialog()
+    return
+  }
+
+  if (showDetailDialog.value) {
+    event.preventDefault()
+    closeDetailDialog()
+    return
+  }
+
+  if (showConsumeDialog.value) {
+    event.preventDefault()
+    closeConsumeDialog()
+    return
+  }
+
+  if (showRechargeDialog.value) {
+    event.preventDefault()
+    closeRechargeDialog()
+  }
 }
 
 async function handleRouteAction() {
@@ -803,13 +957,6 @@ watch(
 )
 
 watch(
-  () => timerConsumeForm.timerType,
-  (nextType) => {
-    timerConsumeForm.packagePlan = getDefaultTimerPackagePlan(nextType)
-  }
-)
-
-watch(
   () => route.query,
   async () => {
     await handleRouteAction()
@@ -818,47 +965,77 @@ watch(
 )
 
 onMounted(async () => {
+  window.addEventListener('keydown', handleGlobalKeydown)
   await Promise.all([fetchCustomers(), fetchActivities(), fetchBillingRules()])
   await fetchTransactions()
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleGlobalKeydown)
+  clearFeedbackTimer()
 })
 </script>
 
 <template>
-  <div class="space-y-6">
-    <div class="flex items-center justify-between">
-      <div>
-        <h1 class="text-2xl font-bold text-gray-800">交易记录</h1>
-        <p class="text-gray-500 mt-1">查看所有交易记录</p>
+  <div class="transactions-page space-y-6">
+    <section class="page-hero rounded-3xl px-5 py-6 sm:px-7 sm:py-7">
+      <div class="relative z-10 flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+        <div class="space-y-2 max-w-2xl">
+          <p class="page-hero__eyebrow">Transaction Workspace</p>
+          <h1 class="page-hero__title">交易记录</h1>
+        </div>
+        <div class="flex flex-wrap items-center gap-2 sm:gap-3">
+          <button
+            @click="openRechargeDialog"
+            class="page-hero__action"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+            </svg>
+            <span>充值</span>
+          </button>
+          <button
+            @click="openConsumeDialog"
+            class="page-hero__action"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4" />
+            </svg>
+            <span>消费</span>
+          </button>
+          <button
+            type="button"
+            disabled
+            title="导出功能待实现"
+            class="page-hero__action"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            <span>导出（待实现）</span>
+          </button>
+        </div>
       </div>
-      <div class="flex space-x-3">
-        <button
-          @click="openRechargeDialog"
-          class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center space-x-2"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-          </svg>
-          <span>充值</span>
-        </button>
-        <button
-          @click="openConsumeDialog"
-          class="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors flex items-center space-x-2"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4" />
-          </svg>
-          <span>消费</span>
-        </button>
-      </div>
-    </div>
+    </section>
 
-    <div class="bg-white rounded-xl shadow-sm p-6">
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+    <Transition name="feedback-fade">
+      <div
+        v-if="feedback.message"
+        role="status"
+        aria-live="polite"
+        :class="['rounded-2xl border px-4 py-3 text-sm shadow-sm', feedbackClass]"
+      >
+        {{ feedback.message }}
+      </div>
+    </Transition>
+
+    <section class="rounded-2xl border border-slate-200/70 bg-white p-4 sm:p-6 shadow-sm">
+      <div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-[minmax(120px,0.75fr)_minmax(160px,1fr)_minmax(160px,1fr)_minmax(200px,1.2fr)_auto_auto_auto] xl:items-end">
         <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">交易类型</label>
+          <label class="block text-sm font-semibold text-slate-700 mb-1.5">交易类型</label>
           <select
             v-model="filterForm.type"
-            class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            class="w-full h-10 px-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           >
             <option v-for="type in transactionTypes" :key="type.value" :value="type.value">
               {{ type.label }}
@@ -867,140 +1044,153 @@ onMounted(async () => {
         </div>
 
         <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">开始日期</label>
-          <input
-            v-model="filterForm.startDate"
-            type="date"
-            class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          />
+          <label class="block text-sm font-semibold text-slate-700 mb-1.5">开始日期</label>
+          <div class="filter-date-wrap">
+            <input
+              v-model="filterForm.startDate"
+              type="date"
+              class="filter-date-input w-full h-10 px-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
+            <span
+              aria-hidden="true"
+              :class="[
+                'filter-date-overlay',
+                filterForm.startDate ? 'filter-date-overlay--value' : 'filter-date-overlay--placeholder'
+              ]"
+            >
+              {{ formatFilterDateLabel(filterForm.startDate) }}
+            </span>
+          </div>
         </div>
 
         <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">结束日期</label>
-          <input
-            v-model="filterForm.endDate"
-            type="date"
-            class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          />
+          <label class="block text-sm font-semibold text-slate-700 mb-1.5">结束日期</label>
+          <div class="filter-date-wrap">
+            <input
+              v-model="filterForm.endDate"
+              type="date"
+              class="filter-date-input w-full h-10 px-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
+            <span
+              aria-hidden="true"
+              :class="[
+                'filter-date-overlay',
+                filterForm.endDate ? 'filter-date-overlay--value' : 'filter-date-overlay--placeholder'
+              ]"
+            >
+              {{ formatFilterDateLabel(filterForm.endDate) }}
+            </span>
+          </div>
         </div>
 
         <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">客户搜索</label>
+          <label class="block text-sm font-semibold text-slate-700 mb-1.5">客户搜索</label>
           <input
             v-model="filterForm.customerKeyword"
             type="text"
-            placeholder="姓名或电话"
-            class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            placeholder="姓名 / 电话 / 编号"
+            class="w-full h-10 px-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           />
         </div>
 
-        <div class="flex items-end space-x-2">
-          <button
-            @click="handleFilter"
-            class="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            筛选
-          </button>
-          <button
-            @click="handleReset"
-            class="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-          >
-            重置
-          </button>
-          <button
-            @click="handleExport"
-            class="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-            title="导出"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-            </svg>
-          </button>
-        </div>
+        <button
+          @click="handleFilter"
+          class="h-10 px-4 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors xl:justify-self-end"
+        >
+          筛选
+        </button>
+        <button
+          @click="handleReset"
+          class="h-10 px-4 border border-slate-300 text-slate-700 rounded-xl hover:bg-slate-50 transition-colors xl:justify-self-start"
+        >
+          重置
+        </button>
+        <span class="text-xs text-slate-500 xl:whitespace-nowrap xl:justify-self-end">导出功能待实现</span>
       </div>
-    </div>
+    </section>
 
-    <div class="bg-white rounded-xl shadow-sm overflow-hidden">
-      <div class="overflow-x-auto">
-        <table class="min-w-full divide-y divide-gray-200">
-          <thead class="bg-gray-50">
+    <section class="rounded-2xl border border-slate-200/70 bg-white shadow-sm overflow-hidden">
+      <div class="hidden md:block overflow-x-auto">
+        <table class="min-w-full divide-y divide-slate-200">
+          <thead class="bg-slate-50">
             <tr>
-              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">交易ID</th>
-              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">客户</th>
-              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">金额</th>
-              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">赠送</th>
-              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">支付方式/描述</th>
-              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">时间</th>
-              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">状态</th>
-              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">操作员</th>
-              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
+              <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">交易ID</th>
+              <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">客户</th>
+              <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">金额</th>
+              <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">赠送</th>
+              <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">支付方式/描述</th>
+              <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">时间</th>
+              <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">状态</th>
+              <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">操作员</th>
+              <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">操作</th>
             </tr>
           </thead>
-          <tbody class="bg-white divide-y divide-gray-200">
+          <tbody class="divide-y divide-slate-100">
             <tr v-if="loading">
-              <td colspan="9" class="px-6 py-12 text-center">
-                <div class="flex items-center justify-center">
-                  <svg class="animate-spin h-8 w-8 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <td colspan="9" class="px-6 py-14 text-center">
+                <div class="flex items-center justify-center gap-2 text-blue-700">
+                  <svg class="animate-spin h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                     <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                   </svg>
+                  <span class="text-sm font-medium">正在加载交易数据...</span>
                 </div>
               </td>
             </tr>
             <tr v-else-if="transactions.length === 0">
-              <td colspan="9" class="px-6 py-12 text-center text-gray-500">
+              <td colspan="9" class="px-6 py-14 text-center text-slate-500">
                 暂无交易记录
               </td>
             </tr>
-            <tr v-else v-for="transaction in transactions" :key="transaction.id" class="hover:bg-gray-50">
-              <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+            <tr v-else v-for="transaction in transactions" :key="transaction.id" class="hover:bg-slate-50/75 transition-colors">
+              <td class="px-5 py-4 whitespace-nowrap text-sm font-semibold text-slate-900">
                 #{{ transaction.id }}
               </td>
-              <td class="px-6 py-4 whitespace-nowrap">
-                <div class="text-sm font-medium text-gray-900">{{ getCustomerName(transaction) }}</div>
-                <div class="text-sm text-gray-500">{{ getCustomerPhone(transaction) }}</div>
+              <td class="px-5 py-4 whitespace-nowrap">
+                <div class="text-sm font-semibold text-slate-900">{{ getCustomerName(transaction) }}</div>
+                <div class="text-sm text-slate-500">{{ getCustomerWechat(transaction) }}</div>
               </td>
-              <td class="px-6 py-4 whitespace-nowrap">
+              <td class="px-5 py-4 whitespace-nowrap">
                 <span
                   :class="[
-                    'text-sm font-medium',
-                    transaction.type === 'recharge' ? 'text-green-600' : 'text-orange-600'
+                    'text-sm font-semibold',
+                    getTransactionAmountClass(transaction.type)
                   ]"
                 >
-                  {{ transaction.type === 'recharge' ? '+' : '-' }}¥{{ formatAmount(transaction.amount) }}
+                  {{ getTransactionAmountPrefix(transaction.type) }}￥{{ formatAmount(transaction.amount) }}
                 </span>
               </td>
-              <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                <span v-if="transaction.bonusAmount > 0" class="text-green-600">
-                  +¥{{ formatAmount(transaction.bonusAmount) }}
+              <td class="px-5 py-4 whitespace-nowrap text-sm text-slate-500">
+                <span v-if="transaction.bonusAmount > 0" class="text-emerald-600 font-medium">
+                  +￥{{ formatAmount(transaction.bonusAmount) }}
                 </span>
                 <span v-else>-</span>
               </td>
-              <td class="px-6 py-4">
-                <div v-if="transaction.type === 'recharge'" class="text-sm text-gray-900">
+              <td class="px-5 py-4">
+                <div v-if="transaction.type === 'recharge'" class="text-sm text-slate-900">
                   {{ paymentMethods.find(p => p.value === transaction.paymentMethod)?.label || transaction.paymentMethod }}
                 </div>
-                <div v-else class="text-sm text-gray-500 max-w-xs truncate">
+                <div v-else class="text-sm text-slate-500 max-w-xs truncate" :title="transaction.description || '-'">
                   {{ transaction.description || '-' }}
                 </div>
               </td>
-              <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+              <td class="px-5 py-4 whitespace-nowrap text-sm text-slate-500">
                 {{ formatDateTime(transaction.createdAt) }}
               </td>
-              <td class="px-6 py-4 whitespace-nowrap">
+              <td class="px-5 py-4 whitespace-nowrap">
                 <span
                   :class="[
-                    'px-2 py-1 text-xs font-medium rounded-full',
+                    'px-2.5 py-1 text-xs font-semibold rounded-full',
                     getStatusClass(transaction.status)
                   ]"
                 >
                   {{ getStatusLabel(transaction.status) }}
                 </span>
               </td>
-              <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                {{ transaction.operator?.name || transaction.operatorName || '-' }}
+              <td class="px-5 py-4 whitespace-nowrap text-sm text-slate-500">
+                {{ getOperatorName(transaction) }}
               </td>
-              <td class="px-6 py-4 whitespace-nowrap text-sm">
+              <td class="px-5 py-4 whitespace-nowrap text-sm">
                 <div class="flex items-center gap-3">
                   <button
                     @click="viewTransactionDetail(transaction)"
@@ -1009,11 +1199,12 @@ onMounted(async () => {
                     查看详情
                   </button>
                   <button
+                    v-if="canCancelTransaction(transaction.type)"
                     @click="cancelTransaction(transaction)"
                     :disabled="isCancellingTransaction(transaction.id)"
-                    class="text-red-600 hover:text-red-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    class="text-rose-600 hover:text-rose-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {{ isCancellingTransaction(transaction.id) ? '取消中...' : '取消' }}
+                    {{ isCancellingTransaction(transaction.id) ? '取消中...' : '取消交易' }}
                   </button>
                 </div>
               </td>
@@ -1022,223 +1213,163 @@ onMounted(async () => {
         </table>
       </div>
 
-      <div v-if="total > 0" class="bg-white px-6 py-4 border-t border-gray-200 flex items-center justify-between">
-        <div class="text-sm text-gray-500">
-          显示 {{ (currentPage - 1) * pageSize + 1 }} 到 {{ Math.min(currentPage * pageSize, total) }} 条，共 {{ total }} 条记录
+      <div class="md:hidden px-3 py-3 sm:p-4 bg-slate-50/70">
+        <div v-if="loading" class="rounded-xl border border-slate-200 bg-white p-6 text-center text-slate-500">
+          <div class="flex items-center justify-center gap-2 text-blue-700">
+            <svg class="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <span>正在加载交易数据...</span>
+          </div>
         </div>
-        <div class="flex items-center space-x-2">
-          <button
-            @click="handlePageChange(currentPage - 1)"
-            :disabled="currentPage === 1"
-            :class="[
-              'px-3 py-1 rounded-lg transition-colors',
-              currentPage === 1
-                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            ]"
+        <div v-else-if="transactions.length === 0" class="rounded-xl border border-slate-200 bg-white p-6 text-center text-slate-500">
+          暂无交易记录
+        </div>
+        <div v-else class="space-y-2.5">
+          <article
+            v-for="transaction in transactions"
+            :key="`mobile-${transaction.id}`"
+            class="rounded-xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm"
           >
-            上一页
-          </button>
-          <template v-for="page in totalPages" :key="page">
-            <button
-              v-if="page === 1 || page === totalPages || Math.abs(page - currentPage) <= 2"
-              @click="handlePageChange(page)"
-              :class="[
-                'px-3 py-1 rounded-lg transition-colors',
-                currentPage === page
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              ]"
-            >
-              {{ page }}
-            </button>
-            <span v-else-if="Math.abs(page - currentPage) === 3" class="px-2 text-gray-400">...</span>
-          </template>
-          <button
-            @click="handlePageChange(currentPage + 1)"
-            :disabled="currentPage === totalPages"
-            :class="[
-              'px-3 py-1 rounded-lg transition-colors',
-              currentPage === totalPages
-                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            ]"
-          >
-            Next
-          </button>
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <p class="text-xs text-slate-500">交易ID</p>
+                <p class="text-sm font-semibold text-slate-900">#{{ transaction.id }}</p>
+              </div>
+              <span :class="['px-2.5 py-1 text-xs font-semibold rounded-full', getTransactionTypeClass(transaction.type)]">
+                {{ getTransactionTypeLabel(transaction.type) }}
+              </span>
+            </div>
+            <div class="mt-2.5 space-y-1 text-sm">
+              <p class="text-slate-900 font-medium">{{ getCustomerName(transaction) }}</p>
+              <p class="text-slate-500">{{ getCustomerWechat(transaction) }}</p>
+              <p class="text-slate-500">{{ formatDateTime(transaction.createdAt) }}</p>
+            </div>
+            <div class="mt-2.5 flex items-end justify-between gap-3">
+              <div>
+                <p
+                  :class="[
+                    'text-base font-semibold',
+                    getTransactionAmountClass(transaction.type)
+                  ]"
+                >
+                  {{ getTransactionAmountPrefix(transaction.type) }}￥{{ formatAmount(transaction.amount) }}
+                </p>
+                <p class="text-xs text-slate-500">
+                  赠送：{{ transaction.bonusAmount > 0 ? `+￥${formatAmount(transaction.bonusAmount)}` : '-' }}
+                </p>
+              </div>
+              <span :class="['px-2 py-1 text-xs font-semibold rounded-full', getStatusClass(transaction.status)]">
+                {{ getStatusLabel(transaction.status) }}
+              </span>
+            </div>
+            <p class="mt-2.5 text-xs text-slate-500 truncate" :title="transaction.description || '-'">
+              {{ transaction.type === 'recharge'
+                ? `支付方式：${paymentMethods.find(p => p.value === transaction.paymentMethod)?.label || transaction.paymentMethod || '-'}`
+                : `描述：${transaction.description || '-'}`
+              }}
+            </p>
+            <div class="mt-2.5 flex items-center gap-2">
+              <button
+                @click="viewTransactionDetail(transaction)"
+                class="flex-1 px-3 py-2 text-sm rounded-lg border border-blue-200 text-blue-700 bg-blue-50 hover:bg-blue-100 transition-colors"
+              >
+                查看详情
+              </button>
+              <button
+                v-if="canCancelTransaction(transaction.type)"
+                @click="cancelTransaction(transaction)"
+                :disabled="isCancellingTransaction(transaction.id)"
+                class="flex-1 px-3 py-2 text-sm rounded-lg border border-rose-200 text-rose-700 bg-rose-50 hover:bg-rose-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {{ isCancellingTransaction(transaction.id) ? '取消中...' : '取消交易' }}
+              </button>
+            </div>
+          </article>
         </div>
       </div>
-    </div>
 
-    <div
-      v-if="showRechargeDialog"
-      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
-      @click.self="showRechargeDialog = false"
-    >
-      <div class="bg-white rounded-xl shadow-xl w-full max-w-md mx-4">
-        <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-          <h3 class="text-lg font-semibold text-gray-800">新增充值</h3>
-          <button
-            @click="showRechargeDialog = false"
-            class="text-gray-400 hover:text-gray-600 transition-colors"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-        <div class="p-6 space-y-4">
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">选择客户</label>
-            <select
-              v-model="rechargeForm.customerId"
-              :class="[
-                'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-                rechargeErrors.customerId ? 'border-red-500' : 'border-gray-300'
-              ]"
-            >
-              <option disabled value="">请选择客户</option>
-              <option v-for="customer in validCustomers" :key="customer.id" :value="customer.id">
-                {{ customer.name }} ({{ customer.phone }})
-              </option>
-            </select>
-            <p v-if="rechargeErrors.customerId" class="text-red-500 text-xs mt-1">
-              {{ rechargeErrors.customerId }}
-            </p>
-          </div>
-
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">充值金额</label>
-            <div class="relative">
-              <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">¥</span>
-              <input
-                v-model="rechargeForm.amount"
-                type="number"
-                step="0.01"
-                min="0"
-                placeholder="0.00"
-                :class="[
-                  'w-full pl-8 pr-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-                  rechargeErrors.amount ? 'border-red-500' : 'border-gray-300'
-                ]"
-              />
+      <div v-if="total > 0" class="px-5 py-4 border-t border-slate-100 bg-gradient-to-r from-slate-50 to-white">
+        <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+          <p class="text-sm text-slate-600">
+            显示 {{ (currentPage - 1) * pageSize + 1 }} 到 {{ Math.min(currentPage * pageSize, total) }} 条，共 {{ total }} 条记录
+          </p>
+          <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <label class="flex items-center gap-2 text-sm text-slate-600">
+              <span>每页</span>
+              <select
+                v-model.number="pageSize"
+                @change="handlePageSizeChange"
+                class="h-9 min-w-[92px] px-3 border border-slate-200 rounded-lg bg-white text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option v-for="size in pageSizeOptions" :key="size" :value="size">{{ size }}条</option>
+              </select>
+            </label>
+            <div class="flex items-center gap-1">
+              <button
+                @click="handlePageChange(currentPage - 1)"
+                :disabled="currentPage === 1"
+                class="h-9 px-3 rounded-lg border border-slate-200 bg-white text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                上一页
+              </button>
+              <template v-for="(page, index) in visiblePages" :key="`transaction-page-${page}-${index}`">
+                <span v-if="page === '...'" class="w-9 text-center text-sm text-slate-400 select-none">...</span>
+                <button
+                  v-else
+                  @click="handlePageChange(page)"
+                  :class="[
+                    'h-9 min-w-[2.25rem] px-2 rounded-lg border text-sm font-medium transition',
+                    currentPage === page
+                      ? 'border-blue-600 bg-blue-600 text-white shadow-sm shadow-blue-100'
+                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                  ]"
+                >
+                  {{ page }}
+                </button>
+              </template>
+              <button
+                @click="handlePageChange(currentPage + 1)"
+                :disabled="currentPage === totalPages"
+                class="h-9 px-3 rounded-lg border border-slate-200 bg-white text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                下一页
+              </button>
             </div>
-            <p v-if="rechargeErrors.amount" class="text-red-500 text-xs mt-1">
-              {{ rechargeErrors.amount }}
-            </p>
           </div>
-
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">赠送金额</label>
-            <div class="relative">
-              <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">¥</span>
-              <input
-                v-model="rechargeForm.bonusAmount"
-                type="number"
-                step="0.01"
-                min="0"
-                :disabled="Boolean(rechargeForm.activityId)"
-                placeholder="0.00"
-                class="w-full pl-8 pr-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100 disabled:text-gray-500"
-              />
-            </div>
-            <p v-if="rechargeForm.activityId" class="text-xs text-gray-500 mt-1">已按活动规则自动计算赠送金额。</p>
-          </div>
-
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">支付方式</label>
-            <select
-              v-model="rechargeForm.paymentMethod"
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            >
-              <option v-for="method in paymentMethods" :key="method.value" :value="method.value">
-                {{ method.label }}
-              </option>
-            </select>
-          </div>
-
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">选择活动（可选）</label>
-            <select
-              v-model="rechargeForm.activityId"
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            >
-              <option value="">无</option>
-              <option v-for="activity in activities" :key="activity.id" :value="activity.id">
-                {{ activity.name }}（每满¥{{ formatAmount(activity.minRechargeAmount) }}送¥{{ formatAmount(activity.bonusAmount) }}）
-              </option>
-            </select>
-          </div>
-        </div>
-        <div class="px-6 py-4 border-t border-gray-200 flex justify-end space-x-3">
-          <button
-            @click="showRechargeDialog = false"
-            class="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-          >
-            取消
-          </button>
-          <button
-            @click="submitRecharge"
-            :disabled="loading"
-            class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            确认充值
-          </button>
         </div>
       </div>
-    </div>
+    </section>
 
-    <div
-      v-if="showConsumeDialog"
-      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
-      @click.self="showConsumeDialog = false"
-    >
-      <div class="bg-white rounded-xl shadow-xl w-full max-w-3xl mx-4 max-h-[90vh] overflow-y-auto">
-        <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-          <h3 class="text-lg font-semibold text-gray-800">新增消费</h3>
-          <button
-            @click="showConsumeDialog = false"
-            class="text-gray-400 hover:text-gray-600 transition-colors"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-
-        <div class="p-6 space-y-4">
-          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+    <Teleport to="body">
+      <div
+        v-if="showRechargeDialog"
+        class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+        @mousedown="onBackdropMouseDown('transactions-recharge', $event)"
+        @mouseup="onBackdropMouseUp('transactions-recharge', $event) && closeRechargeDialog()"
+      >
+        <div class="bg-white rounded-xl shadow-xl w-full max-w-md mx-4">
+          <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+            <h3 class="text-lg font-semibold text-gray-800">新增充值</h3>
             <button
-              v-for="mode in consumeModes"
-              :key="mode.value"
-              @click="consumeMode = mode.value"
-              :class="[
-                'px-4 py-2 rounded-lg border text-sm font-medium transition-colors',
-                consumeMode === mode.value
-                  ? 'border-blue-500 bg-blue-50 text-blue-700'
-                  : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
-              ]"
+              @click="closeRechargeDialog()"
+              class="text-gray-400 hover:text-gray-600 transition-colors"
             >
-              {{ mode.label }}
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
             </button>
           </div>
-
-          <div class="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-sm">
-            <span v-if="consumeBalanceLoading" class="text-blue-700">正在获取客户余额...</span>
-            <span v-else-if="consumeCurrentBalance !== null" class="text-blue-700">
-              当前客户余额: <strong>¥{{ formatAmount(consumeCurrentBalance) }}</strong>
-            </span>
-            <span v-else class="text-blue-700">请选择客户以查看余额</span>
-          </div>
-
-          <div v-if="consumeMode === 'manual'" class="space-y-4">
+          <div class="p-6 space-y-4">
             <div>
               <label class="block text-sm font-medium text-gray-700 mb-1">选择客户</label>
               <select
-                v-model="manualConsumeForm.customerId"
+                ref="rechargeCustomerSelectRef"
+                v-model="rechargeForm.customerId"
                 :class="[
                   'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-                  manualConsumeErrors.customerId ? 'border-red-500' : 'border-gray-300'
+                  rechargeErrors.customerId ? 'border-red-500' : 'border-gray-300'
                 ]"
               >
                 <option disabled value="">请选择客户</option>
@@ -1246,452 +1377,615 @@ onMounted(async () => {
                   {{ customer.name }} ({{ customer.phone }})
                 </option>
               </select>
-              <p v-if="manualConsumeErrors.customerId" class="text-red-500 text-xs mt-1">
-                {{ manualConsumeErrors.customerId }}
+              <p v-if="rechargeErrors.customerId" class="text-red-500 text-xs mt-1">
+                {{ rechargeErrors.customerId }}
               </p>
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">消费金额</label>
+              <label class="block text-sm font-medium text-gray-700 mb-1">充值金额</label>
               <div class="relative">
-                <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">¥</span>
+                <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">￥</span>
                 <input
-                  v-model="manualConsumeForm.amount"
+                  v-model="rechargeForm.amount"
                   type="number"
                   step="0.01"
                   min="0"
                   placeholder="0.00"
                   :class="[
                     'w-full pl-8 pr-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-                    manualConsumeErrors.amount ? 'border-red-500' : 'border-gray-300'
+                    rechargeErrors.amount ? 'border-red-500' : 'border-gray-300'
                   ]"
                 />
               </div>
-              <p v-if="manualConsumeErrors.amount" class="text-red-500 text-xs mt-1">
-                {{ manualConsumeErrors.amount }}
+              <p v-if="rechargeErrors.amount" class="text-red-500 text-xs mt-1">
+                {{ rechargeErrors.amount }}
               </p>
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">描述</label>
-              <textarea
-                v-model="manualConsumeForm.description"
-                rows="3"
-                placeholder="请输入消费描述"
-                :class="[
-                  'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none',
-                  manualConsumeErrors.description ? 'border-red-500' : 'border-gray-300'
-                ]"
-              ></textarea>
-              <p v-if="manualConsumeErrors.description" class="text-red-500 text-xs mt-1">
-                {{ manualConsumeErrors.description }}
-              </p>
-            </div>
-
-            <label class="inline-flex items-center gap-2 text-sm text-gray-700">
-              <input
-                v-model="manualConsumeForm.meituanCustomer"
-                type="checkbox"
-                class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-              >
-              美团客户（消费金额抽成7%）
-            </label>
-
-            <div v-if="manualConsumeForm.meituanCustomer" class="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800 space-y-1">
-              <p>原始金额：¥{{ formatAmount(manualInputAmount) }}</p>
-              <p>美团抽成：-¥{{ formatAmount(manualMeituanDeduction) }}</p>
-              <p class="font-semibold">结算金额：¥{{ formatAmount(manualFinalAmount) }}</p>
-            </div>
-          </div>
-
-          <div v-else-if="consumeMode === 'auto'" class="space-y-4">
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">选择客户</label>
-              <select
-                v-model="autoConsumeForm.customerId"
-                :class="[
-                  'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-                  autoConsumeErrors.customerId ? 'border-red-500' : 'border-gray-300'
-                ]"
-              >
-                <option disabled value="">请选择客户</option>
-                <option v-for="customer in validCustomers" :key="customer.id" :value="customer.id">
-                  {{ customer.name }} ({{ customer.phone }})
-                </option>
-              </select>
-              <p v-if="autoConsumeErrors.customerId" class="text-red-500 text-xs mt-1">
-                {{ autoConsumeErrors.customerId }}
-              </p>
-            </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">计费类型</label>
-                <select
-                  v-model="autoConsumeForm.billingType"
-                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                >
-                  <option value="limited">限时计费</option>
-                  <option value="weekday">工作日计费</option>
-                  <option value="weekend">周末计费</option>
-                </select>
-              </div>
-
-              <div v-if="autoConsumeForm.billingType === 'limited'">
-                <label class="block text-sm font-medium text-gray-700 mb-1">时长</label>
-                <select
-                  v-model="autoConsumeForm.duration"
-                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                >
-                  <option value="1">1小时</option>
-                  <option value="2">2小时</option>
-                </select>
-              </div>
-
-              <div v-if="autoConsumeForm.billingType === 'weekday'">
-                <label class="block text-sm font-medium text-gray-700 mb-1">工作日方案</label>
-                <select
-                  v-model="autoConsumeForm.weekdayType"
-                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                >
-                  <option value="singleUnlimited">单人不限时不限板</option>
-                  <option value="doubleUnlimited">双人不限时不限板</option>
-                  <option value="singleLimited">单人不限时限板</option>
-                </select>
-              </div>
-
-              <div v-if="autoConsumeForm.billingType === 'weekend'">
-                <label class="block text-sm font-medium text-gray-700 mb-1">周末方案</label>
-                <select
-                  v-model="autoConsumeForm.weekendType"
-                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                >
-                  <option value="singleUnlimited">单人不限时不限板</option>
-                  <option value="doubleUnlimited">双人不限时不限板</option>
-                  <option value="singleLimited">单人不限时限板</option>
-                </select>
-              </div>
-
-              <div v-if="autoConsumeForm.billingType === 'limited'">
-                <label class="block text-sm font-medium text-gray-700 mb-1">超时分钟</label>
+              <label class="block text-sm font-medium text-gray-700 mb-1">赠送金额</label>
+              <div class="relative">
+                <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">￥</span>
                 <input
-                  v-model.number="autoConsumeForm.overtimeMinutes"
+                  v-model="rechargeForm.bonusAmount"
                   type="number"
-                  min="0"
-                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-            </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">大图数量</label>
-                <input
-                  v-model.number="autoConsumeForm.largeImages"
-                  type="number"
-                  min="0"
-                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">超量小图</label>
-                <input
-                  v-model.number="autoConsumeForm.extraSmallImages"
-                  type="number"
-                  min="0"
-                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">超量大图</label>
-                <input
-                  v-model.number="autoConsumeForm.extraLargeImages"
-                  type="number"
-                  min="0"
-                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">附加费用</label>
-                <input
-                  v-model.number="autoConsumeForm.additionalFee"
-                  type="number"
-                  min="0"
                   step="0.01"
-                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  min="0"
+                  :disabled="Boolean(rechargeForm.activityId)"
+                  placeholder="0.00"
+                  class="w-full pl-8 pr-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100 disabled:text-gray-500"
                 />
               </div>
+              <p v-if="rechargeForm.activityId" class="text-xs text-gray-500 mt-1">已按活动规则自动计算赠送金额。</p>
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">备注</label>
-              <textarea
-                v-model="autoConsumeForm.notes"
-                rows="2"
-                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
-                placeholder="可选"
-              ></textarea>
-            </div>
-
-            <label class="inline-flex items-center gap-2 text-sm text-gray-700">
-              <input
-                v-model="autoConsumeForm.meituanCustomer"
-                type="checkbox"
-                class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-              >
-              美团客户（基础费用抽成7%）
-            </label>
-
-            <div class="bg-green-50 border border-green-200 rounded-lg p-4 text-sm text-green-800 space-y-1">
-              <p>计费类型: {{ getBillingTypeLabel(autoConsumeForm.billingType) }}</p>
-              <p>基础费用: ¥{{ formatAmount(autoConsumePreview.baseFee) }}</p>
-              <p>超时费用: ¥{{ formatAmount(autoConsumePreview.overtimeFee) }}</p>
-              <p>耗材费用: ¥{{ formatAmount(autoConsumePreview.materialFee) }}</p>
-              <p>附加费用: ¥{{ formatAmount(autoConsumePreview.additionalFee) }}</p>
-              <p v-if="autoConsumeForm.meituanCustomer">美团抽成: -¥{{ formatAmount(autoMeituanDeduction) }}</p>
-              <p class="font-semibold text-base">
-                结算金额: ¥{{ formatAmount(autoConsumeForm.meituanCustomer ? autoFinalAmount : autoConsumePreview.total) }}
-              </p>
-            </div>
-            <p v-if="autoConsumeErrors.total" class="text-red-500 text-xs mt-1">
-              {{ autoConsumeErrors.total }}
-            </p>
-          </div>
-
-          <div v-else class="space-y-4">
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">选择客户</label>
+              <label class="block text-sm font-medium text-gray-700 mb-1">支付方式</label>
               <select
-                v-model="timerConsumeForm.customerId"
-                :class="[
-                  'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-                  timerConsumeErrors.customerId ? 'border-red-500' : 'border-gray-300'
-                ]"
+                v-model="rechargeForm.paymentMethod"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               >
-                <option disabled value="">请选择客户</option>
-                <option v-for="customer in validCustomers" :key="customer.id" :value="customer.id">
-                  {{ customer.name }} ({{ customer.phone }})
+                <option v-for="method in paymentMethods" :key="method.value" :value="method.value">
+                  {{ method.label }}
                 </option>
               </select>
-              <p v-if="timerConsumeErrors.customerId" class="text-red-500 text-xs mt-1">
-                {{ timerConsumeErrors.customerId }}
-              </p>
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">计时类型</label>
+              <label class="block text-sm font-medium text-gray-700 mb-1">选择活动（可选）</label>
               <select
-                v-model="timerConsumeForm.timerType"
-                :class="[
-                  'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-                  timerConsumeErrors.timerType ? 'border-red-500' : 'border-gray-300'
-                ]"
+                v-model="rechargeForm.activityId"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               >
-                <option v-for="item in timerTypeOptions" :key="item.value" :value="item.value">
-                  {{ item.label }}
+                <option value="">无</option>
+                <option v-for="activity in activities" :key="activity.id" :value="activity.id">
+                  {{ activity.name }}（每满￥{{ formatAmount(activity.minRechargeAmount) }}送￥{{ formatAmount(activity.bonusAmount) }}）
                 </option>
               </select>
-              <p v-if="timerConsumeErrors.timerType" class="text-red-500 text-xs mt-1">
-                {{ timerConsumeErrors.timerType }}
-              </p>
-            </div>
-
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">套餐方案</label>
-              <select
-                v-model="timerConsumeForm.packagePlan"
-                :class="[
-                  'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-                  timerConsumeErrors.packagePlan ? 'border-red-500' : 'border-gray-300'
-                ]"
-              >
-                <option v-for="item in timerPackagePlanOptions" :key="item.value" :value="item.value">
-                  {{ item.label }}
-                </option>
-              </select>
-              <p v-if="timerConsumeErrors.packagePlan" class="text-red-500 text-xs mt-1">
-                {{ timerConsumeErrors.packagePlan }}
-              </p>
-            </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">大图数量</label>
-                <input
-                  v-model.number="timerConsumeForm.largeImages"
-                  type="number"
-                  min="0"
-                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">超量小图</label>
-                <input
-                  v-model.number="timerConsumeForm.extraSmallImages"
-                  type="number"
-                  min="0"
-                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">超量大图</label>
-                <input
-                  v-model.number="timerConsumeForm.extraLargeImages"
-                  type="number"
-                  min="0"
-                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">备注</label>
-              <textarea
-                v-model="timerConsumeForm.notes"
-                rows="2"
-                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
-                placeholder="开始计时前的备注"
-              ></textarea>
-            </div>
-
-            <div class="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800">
-              计时开始后，请前往“正在计时”页面完成结算。
             </div>
           </div>
-        </div>
-
-        <div class="px-6 py-4 border-t border-gray-200 flex justify-end space-x-3">
-          <button
-            @click="showConsumeDialog = false"
-            class="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-          >
-            取消
-          </button>
-          <button
-            @click="submitConsumeByMode"
-            :disabled="loading"
-            class="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {{ consumeSubmitLabel }}
-          </button>
+          <div class="px-6 py-4 border-t border-gray-200 flex justify-end space-x-3">
+            <button
+              @click="closeRechargeDialog()"
+              class="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              取消
+            </button>
+            <button
+              @click="submitRecharge"
+              :disabled="loading"
+              class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              确认充值
+            </button>
+          </div>
         </div>
       </div>
-    </div>
-<div
-      v-if="showDetailDialog && selectedTransaction"
-      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
-      @click.self="showDetailDialog = false"
-    >
-      <div class="bg-white rounded-xl shadow-xl w-full max-w-lg mx-4">
-        <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-          <h3 class="text-lg font-semibold text-gray-800">交易详情</h3>
-          <button
-            @click="showDetailDialog = false"
-            class="text-gray-400 hover:text-gray-600 transition-colors"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-        <div class="p-6 space-y-4">
-          <div class="grid grid-cols-2 gap-4">
-            <div>
-              <label class="text-sm text-gray-500">交易ID</label>
-              <p class="text-gray-900 font-medium">#{{ selectedTransaction.id }}</p>
-            </div>
-            <div>
-              <label class="text-sm text-gray-500">交易类型</label>
-              <p>
-                <span
-                  :class="[
-                    'px-2 py-1 text-xs font-medium rounded-full',
-                    getTransactionTypeClass(selectedTransaction.type)
-                  ]"
-                >
-                  {{ getTransactionTypeLabel(selectedTransaction.type) }}
-                </span>
-              </p>
-            </div>
-            <div>
-              <label class="text-sm text-gray-500">客户姓名</label>
-              <p class="text-gray-900">{{ getCustomerName(selectedTransaction) }}</p>
-            </div>
-            <div>
-              <label class="text-sm text-gray-500">客户电话</label>
-              <p class="text-gray-900">{{ getCustomerPhone(selectedTransaction) }}</p>
-            </div>
-            <div>
-              <label class="text-sm text-gray-500">金额</label>
-              <p
+    </Teleport>
+
+    <Teleport to="body">
+      <div
+        v-if="showConsumeDialog"
+        class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+        @mousedown="onBackdropMouseDown('transactions-consume', $event)"
+        @mouseup="onBackdropMouseUp('transactions-consume', $event) && closeConsumeDialog()"
+      >
+        <div class="bg-white rounded-xl shadow-xl w-full max-w-3xl mx-4 max-h-[90vh] overflow-y-auto">
+          <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+            <h3 class="text-lg font-semibold text-gray-800">新增消费</h3>
+            <button
+              @click="closeConsumeDialog()"
+              class="text-gray-400 hover:text-gray-600 transition-colors"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          <div class="p-6 space-y-4">
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <button
+                v-for="mode in consumeModes"
+                :key="mode.value"
+                @click="consumeMode = mode.value"
                 :class="[
-                  'font-medium',
-                  selectedTransaction.type === 'recharge' ? 'text-green-600' : 'text-orange-600'
+                  'px-4 py-2 rounded-lg border text-sm font-medium transition-colors',
+                  consumeMode === mode.value
+                    ? 'border-blue-500 bg-blue-50 text-blue-700'
+                    : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
                 ]"
               >
-                {{ selectedTransaction.type === 'recharge' ? '+' : '-' }}¥{{ formatAmount(selectedTransaction.amount) }}
-              </p>
+                {{ mode.label }}
+              </button>
             </div>
-            <div>
-              <label class="text-sm text-gray-500">赠送金额</label>
-              <p class="text-green-600">
-                {{ selectedTransaction.bonusAmount > 0 ? '+¥' + formatAmount(selectedTransaction.bonusAmount) : '-' }}
-              </p>
+
+            <div class="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-sm">
+              <span v-if="consumeBalanceLoading" class="text-blue-700">正在获取客户余额...</span>
+              <span v-else-if="consumeCurrentBalance !== null" class="text-blue-700">
+                当前客户余额: <strong>￥{{ formatAmount(consumeCurrentBalance) }}</strong>
+              </span>
+              <span v-else class="text-blue-700">请选择客户以查看余额</span>
             </div>
-            <div v-if="selectedTransaction.type === 'recharge'">
-              <label class="text-sm text-gray-500">支付方式</label>
-              <p class="text-gray-900">
-                {{ paymentMethods.find(p => p.value === selectedTransaction.paymentMethod)?.label || selectedTransaction.paymentMethod }}
-              </p>
-            </div>
-            <div>
-              <label class="text-sm text-gray-500">状态</label>
-              <p>
-                <span
+
+            <div v-if="consumeMode === 'manual'" class="space-y-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">选择客户</label>
+                <select
+                  ref="manualConsumeCustomerSelectRef"
+                  v-model="manualConsumeForm.customerId"
                   :class="[
-                    'px-2 py-1 text-xs font-medium rounded-full',
-                    getStatusClass(selectedTransaction.status)
+                    'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
+                    manualConsumeErrors.customerId ? 'border-red-500' : 'border-gray-300'
                   ]"
                 >
-                  {{ getStatusLabel(selectedTransaction.status) }}
-                </span>
+                  <option disabled value="">请选择客户</option>
+                  <option v-for="customer in validCustomers" :key="customer.id" :value="customer.id">
+                    {{ customer.name }} ({{ customer.phone }})
+                  </option>
+                </select>
+                <p v-if="manualConsumeErrors.customerId" class="text-red-500 text-xs mt-1">
+                  {{ manualConsumeErrors.customerId }}
+                </p>
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">消费金额</label>
+                <div class="relative">
+                  <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">￥</span>
+                  <input
+                    v-model="manualConsumeForm.amount"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="0.00"
+                    :class="[
+                      'w-full pl-8 pr-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
+                      manualConsumeErrors.amount ? 'border-red-500' : 'border-gray-300'
+                    ]"
+                  />
+                </div>
+                <p v-if="manualConsumeErrors.amount" class="text-red-500 text-xs mt-1">
+                  {{ manualConsumeErrors.amount }}
+                </p>
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">描述</label>
+                <textarea
+                  v-model="manualConsumeForm.description"
+                  rows="3"
+                  placeholder="请输入消费描述"
+                  :class="[
+                    'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none',
+                    manualConsumeErrors.description ? 'border-red-500' : 'border-gray-300'
+                  ]"
+                ></textarea>
+                <p v-if="manualConsumeErrors.description" class="text-red-500 text-xs mt-1">
+                  {{ manualConsumeErrors.description }}
+                </p>
+              </div>
+
+              <label class="inline-flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  v-model="manualConsumeForm.meituanCustomer"
+                  type="checkbox"
+                  class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                >
+                美团客户（消费金额抽成7%）
+              </label>
+
+              <div v-if="manualConsumeForm.meituanCustomer" class="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800 space-y-1">
+                <p>原始金额：￥{{ formatAmount(manualInputAmount) }}</p>
+                <p>美团抽成：-￥{{ formatAmount(manualMeituanDeduction) }}</p>
+                <p class="font-semibold">结算金额：￥{{ formatAmount(manualFinalAmount) }}</p>
+              </div>
+            </div>
+
+            <div v-else-if="consumeMode === 'auto'" class="space-y-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">选择客户</label>
+                <select
+                  v-model="autoConsumeForm.customerId"
+                  :class="[
+                    'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
+                    autoConsumeErrors.customerId ? 'border-red-500' : 'border-gray-300'
+                  ]"
+                >
+                  <option disabled value="">请选择客户</option>
+                  <option v-for="customer in validCustomers" :key="customer.id" :value="customer.id">
+                    {{ customer.name }} ({{ customer.phone }})
+                  </option>
+                </select>
+                <p v-if="autoConsumeErrors.customerId" class="text-red-500 text-xs mt-1">
+                  {{ autoConsumeErrors.customerId }}
+                </p>
+              </div>
+
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">计费类型</label>
+                  <select
+                    v-model="autoConsumeForm.billingType"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  >
+                    <option value="limited">限时计费</option>
+                    <option value="weekday">工作日计费</option>
+                    <option value="weekend">周末计费</option>
+                  </select>
+                </div>
+
+                <div v-if="autoConsumeForm.billingType === 'limited'">
+                  <label class="block text-sm font-medium text-gray-700 mb-1">时长</label>
+                  <select
+                    v-model="autoConsumeForm.duration"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  >
+                    <option value="1">1小时</option>
+                    <option value="2">2小时</option>
+                  </select>
+                </div>
+
+                <div v-if="autoConsumeForm.billingType === 'weekday'">
+                  <label class="block text-sm font-medium text-gray-700 mb-1">工作日方案</label>
+                  <select
+                    v-model="autoConsumeForm.weekdayType"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  >
+                    <option value="singleUnlimited">单人不限时不限板</option>
+                    <option value="doubleUnlimited">双人不限时不限板</option>
+                    <option value="singleLimited">单人不限时限板</option>
+                  </select>
+                </div>
+
+                <div v-if="autoConsumeForm.billingType === 'weekend'">
+                  <label class="block text-sm font-medium text-gray-700 mb-1">周末方案</label>
+                  <select
+                    v-model="autoConsumeForm.weekendType"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  >
+                    <option value="singleUnlimited">单人不限时不限板</option>
+                    <option value="doubleUnlimited">双人不限时不限板</option>
+                    <option value="singleLimited">单人不限时限板</option>
+                  </select>
+                </div>
+
+                <div v-if="autoConsumeForm.billingType === 'limited'">
+                  <label class="block text-sm font-medium text-gray-700 mb-1">超时分钟</label>
+                  <input
+                    v-model.number="autoConsumeForm.overtimeMinutes"
+                    type="number"
+                    min="0"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">大图数量</label>
+                  <input
+                    v-model.number="autoConsumeForm.largeImages"
+                    type="number"
+                    min="0"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">超量小图</label>
+                  <input
+                    v-model.number="autoConsumeForm.extraSmallImages"
+                    type="number"
+                    min="0"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">超量大图</label>
+                  <input
+                    v-model.number="autoConsumeForm.extraLargeImages"
+                    type="number"
+                    min="0"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">附加费用</label>
+                  <input
+                    v-model.number="autoConsumeForm.additionalFee"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">备注</label>
+                <textarea
+                  v-model="autoConsumeForm.notes"
+                  rows="2"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
+                  placeholder="可选"
+                ></textarea>
+              </div>
+
+              <label class="inline-flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  v-model="autoConsumeForm.meituanCustomer"
+                  type="checkbox"
+                  class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                >
+                美团客户（基础费用抽成7%）
+              </label>
+
+              <div class="bg-green-50 border border-green-200 rounded-lg p-4 text-sm text-green-800 space-y-1">
+                <p>计费类型: {{ getBillingTypeLabel(autoConsumeForm.billingType) }}</p>
+                <p>基础费用: ￥{{ formatAmount(autoConsumePreview.baseFee) }}</p>
+                <p>超时费用: ￥{{ formatAmount(autoConsumePreview.overtimeFee) }}</p>
+                <p>耗材费用: ￥{{ formatAmount(autoConsumePreview.materialFee) }}</p>
+                <p>附加费用: ￥{{ formatAmount(autoConsumePreview.additionalFee) }}</p>
+                <p v-if="autoConsumeForm.meituanCustomer">美团抽成: -￥{{ formatAmount(autoMeituanDeduction) }}</p>
+                <p class="font-semibold text-base">
+                  结算金额: ￥{{ formatAmount(autoConsumeForm.meituanCustomer ? autoFinalAmount : autoConsumePreview.total) }}
+                </p>
+              </div>
+              <p v-if="autoConsumeErrors.total" class="text-red-500 text-xs mt-1">
+                {{ autoConsumeErrors.total }}
               </p>
             </div>
-            <div>
-              <label class="text-sm text-gray-500">交易时间</label>
-              <p class="text-gray-900">{{ formatDateTime(selectedTransaction.createdAt) }}</p>
+
+            <div v-else-if="consumeMode === 'timer'">
+              <TimerConsumeDialog
+                :model-value="timerConsumeForm"
+                :errors="timerConsumeErrors"
+                :customer-options="validCustomers"
+                @update:model-value="applyTimerConsumeForm"
+              />
             </div>
-            <div>
-              <label class="text-sm text-gray-500">操作员</label>
-              <p class="text-gray-900">
-                {{ selectedTransaction.operator?.name || selectedTransaction.operatorName || '-' }}
-              </p>
-            </div>
           </div>
-          <div v-if="selectedTransaction.type === 'consumption' && selectedTransaction.description">
-            <label class="text-sm text-gray-500">描述</label>
-            <p class="text-gray-900 mt-1">{{ selectedTransaction.description }}</p>
+          <div class="px-6 py-4 border-t border-gray-200 flex justify-end space-x-3">
+            <button
+              @click="closeConsumeDialog()"
+              class="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              取消
+            </button>
+            <button
+              @click="submitConsumeByMode"
+              :disabled="loading"
+              class="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {{ consumeSubmitLabel }}
+            </button>
           </div>
-          <div v-if="selectedTransaction.activity">
-            <label class="text-sm text-gray-500">关联活动</label>
-            <p class="text-gray-900">{{ selectedTransaction.activity?.name || '-' }}</p>
-          </div>
-        </div>
-        <div class="px-6 py-4 border-t border-gray-200 flex justify-end">
-          <button
-            @click="showDetailDialog = false"
-            class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
-          >
-            关闭
-          </button>
         </div>
       </div>
-    </div>
+    </Teleport>
+    <Teleport to="body">
+      <div
+        v-if="showDetailDialog && selectedTransaction"
+        class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+        @mousedown="onBackdropMouseDown('transactions-detail', $event)"
+        @mouseup="onBackdropMouseUp('transactions-detail', $event) && closeDetailDialog()"
+      >
+        <div class="bg-white rounded-xl shadow-xl w-full max-w-lg mx-4">
+          <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+            <h3 class="text-lg font-semibold text-gray-800">交易详情</h3>
+            <button
+              ref="detailCloseButtonRef"
+              @click="closeDetailDialog()"
+              class="text-gray-400 hover:text-gray-600 transition-colors"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <div class="p-6 space-y-4">
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <label class="text-sm text-gray-500">交易ID</label>
+                <p class="text-gray-900 font-medium">#{{ selectedTransaction.id }}</p>
+              </div>
+              <div>
+                <label class="text-sm text-gray-500">交易类型</label>
+                <p>
+                  <span
+                    :class="[
+                      'px-2 py-1 text-xs font-medium rounded-full',
+                      getTransactionTypeClass(selectedTransaction.type)
+                    ]"
+                  >
+                    {{ getTransactionTypeLabel(selectedTransaction.type) }}
+                  </span>
+                </p>
+              </div>
+              <div>
+                <label class="text-sm text-gray-500">客户姓名</label>
+                <p class="text-gray-900">{{ getCustomerName(selectedTransaction) }}</p>
+              </div>
+              <div>
+                <label class="text-sm text-gray-500">客户微信号</label>
+                <p class="text-gray-900">{{ getCustomerWechat(selectedTransaction) }}</p>
+              </div>
+              <div>
+                <label class="text-sm text-gray-500">金额</label>
+                <p
+                  :class="[
+                    'font-medium',
+                    getTransactionAmountClass(selectedTransaction.type)
+                  ]"
+                >
+                  {{ getTransactionAmountPrefix(selectedTransaction.type) }}￥{{ formatAmount(selectedTransaction.amount) }}
+                </p>
+              </div>
+              <div>
+                <label class="text-sm text-gray-500">赠送金额</label>
+                <p class="text-green-600">
+                  {{ selectedTransaction.bonusAmount > 0 ? '+￥' + formatAmount(selectedTransaction.bonusAmount) : '-' }}
+                </p>
+              </div>
+              <div v-if="selectedTransaction.type === 'recharge'">
+                <label class="text-sm text-gray-500">支付方式</label>
+                <p class="text-gray-900">
+                  {{ paymentMethods.find(p => p.value === selectedTransaction.paymentMethod)?.label || selectedTransaction.paymentMethod }}
+                </p>
+              </div>
+              <div>
+                <label class="text-sm text-gray-500">状态</label>
+                <p>
+                  <span
+                    :class="[
+                      'px-2 py-1 text-xs font-medium rounded-full',
+                      getStatusClass(selectedTransaction.status)
+                    ]"
+                  >
+                    {{ getStatusLabel(selectedTransaction.status) }}
+                  </span>
+                </p>
+              </div>
+              <div>
+                <label class="text-sm text-gray-500">交易时间</label>
+                <p class="text-gray-900">{{ formatDateTime(selectedTransaction.createdAt) }}</p>
+              </div>
+              <div>
+                <label class="text-sm text-gray-500">操作员</label>
+                <p class="text-gray-900">
+                  {{ getOperatorName(selectedTransaction) }}
+                </p>
+              </div>
+            </div>
+            <div v-if="selectedTransaction.type !== 'recharge' && selectedTransaction.description">
+              <label class="text-sm text-gray-500">描述</label>
+              <p class="text-gray-900 mt-1">{{ selectedTransaction.description }}</p>
+            </div>
+            <div v-if="selectedTransaction.activity">
+              <label class="text-sm text-gray-500">关联活动</label>
+              <p class="text-gray-900">{{ selectedTransaction.activity?.name || '-' }}</p>
+            </div>
+          </div>
+          <div class="px-6 py-4 border-t border-gray-200 flex justify-end">
+            <button
+              @click="closeDetailDialog()"
+              class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+            >
+              关闭
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+    <Teleport to="body">
+      <div
+        v-if="showCancelConfirmDialog && cancelTargetTransaction"
+        class="fixed inset-0 z-50 bg-black/55 flex items-center justify-center p-4"
+        @mousedown="onBackdropMouseDown('transactions-cancel', $event)"
+        @mouseup="onBackdropMouseUp('transactions-cancel', $event) && closeCancelConfirmDialog()"
+      >
+        <div class="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-100">
+          <div class="px-6 py-5 border-b border-slate-100">
+            <h3 class="text-lg font-semibold text-slate-900">确认取消交易？</h3>
+              <p class="mt-2 text-sm text-slate-600 leading-relaxed">
+                取消后将自动回滚对应数据（会员余额或豆仓库存），操作无法恢复。请确认交易信息无误后再继续。
+              </p>
+          </div>
+          <div class="px-6 py-4 space-y-2 text-sm bg-slate-50 border-b border-slate-100">
+            <p class="text-slate-700">交易ID：<strong>#{{ cancelTargetTransaction.id }}</strong></p>
+            <p class="text-slate-700">交易类型：{{ getTransactionTypeLabel(cancelTargetTransaction.type) }}</p>
+            <p class="text-slate-700">交易金额：￥{{ formatAmount(cancelTargetTransaction.amount) }}</p>
+            <p class="text-slate-700">客户：{{ getCustomerName(cancelTargetTransaction) }}</p>
+          </div>
+          <div class="px-6 py-4 flex justify-end gap-3">
+            <button
+              type="button"
+              @click="closeCancelConfirmDialog"
+              :disabled="isCancellingTransaction(cancelTargetTransaction.id)"
+              class="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              返回
+            </button>
+            <button
+              ref="cancelConfirmButtonRef"
+              type="button"
+              @click="confirmCancelTransaction"
+              :disabled="isCancellingTransaction(cancelTargetTransaction.id)"
+              class="px-4 py-2 rounded-lg bg-rose-600 text-white hover:bg-rose-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {{ isCancellingTransaction(cancelTargetTransaction.id) ? '取消中...' : '确认取消交易' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <style scoped>
+.feedback-fade-enter-active,
+.feedback-fade-leave-active {
+  transition: all 180ms ease;
+}
+
+.feedback-fade-enter-from,
+.feedback-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+
+.filter-date-wrap {
+  position: relative;
+}
+
+.filter-date-overlay {
+  position: absolute;
+  left: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+.filter-date-overlay--placeholder {
+  color: #94a3b8;
+}
+
+.filter-date-overlay--value {
+  color: #0f172a;
+  font-weight: 600;
+}
+
+.filter-date-input {
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.filter-date-input::-webkit-datetime-edit {
+  color: transparent;
+  letter-spacing: 0.01em;
+}
+
+.filter-date-input::-webkit-datetime-edit-text {
+  color: transparent;
+  padding: 0;
+}
+
+.filter-date-input::-webkit-calendar-picker-indicator {
+  opacity: 0.82;
+}
 </style>
+
+
+
+
 
 
 

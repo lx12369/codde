@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { clearAuthStorage, readAuthSession } from '@/utils/authStorage'
 
 export const useAppStore = defineStore('app', () => {
   const isLoading = ref(false)
@@ -15,10 +16,9 @@ export const useAppStore = defineStore('app', () => {
 })
 
 export const useAuthStore = defineStore('auth', () => {
-  const token = ref(localStorage.getItem('token') || sessionStorage.getItem('token') || '')
-  
-  const userJson = localStorage.getItem('user') || sessionStorage.getItem('user')
-  const user = ref(userJson ? JSON.parse(userJson) : null)
+  const session = readAuthSession()
+  const token = ref(session.token || '')
+  const user = ref(session.user || null)
 
   const isAuthenticated = computed(() => !!token.value)
 
@@ -33,10 +33,7 @@ export const useAuthStore = defineStore('auth', () => {
   function logout() {
     token.value = ''
     user.value = null
-    localStorage.removeItem('token')
-    localStorage.removeItem('user')
-    sessionStorage.removeItem('token')
-    sessionStorage.removeItem('user')
+    clearAuthStorage()
   }
 
   return { 

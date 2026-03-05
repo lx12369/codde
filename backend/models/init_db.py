@@ -1,12 +1,19 @@
 import bcrypt
+import json
+import sys
+from pathlib import Path
 from .models import db, User
 from sqlalchemy import inspect, text
+from .models import BeadMaterial, BeadInventoryBalance
 
 
 def init_db(app):
     with app.app_context():
         db.create_all()
         ensure_customer_columns()
+        ensure_active_timer_columns()
+        ensure_bead_material_columns()
+        ensure_builtin_mard_materials()
         create_default_admin()
 
 
@@ -56,3 +63,138 @@ def create_default_admin():
     db.session.add(admin)
     db.session.commit()
     print('Default admin user created: username=admin, password=admin123')
+
+
+def ensure_active_timer_columns():
+    inspector = inspect(db.engine)
+    if 'active_timers' not in inspector.get_table_names():
+        return
+
+    existing_columns = {column['name'] for column in inspector.get_columns('active_timers')}
+    alter_statements = []
+
+    if 'table_no' not in existing_columns:
+        alter_statements.append('ALTER TABLE active_timers ADD COLUMN table_no VARCHAR(30)')
+
+    if not alter_statements:
+        return
+
+    for sql in alter_statements:
+        db.session.execute(text(sql))
+
+    db.session.commit()
+
+
+def ensure_bead_material_columns():
+    inspector = inspect(db.engine)
+    if 'bead_materials' not in inspector.get_table_names():
+        return
+
+    existing_columns = {column['name'] for column in inspector.get_columns('bead_materials')}
+    alter_statements = []
+
+    if 'common_color' not in existing_columns:
+        alter_statements.append('ALTER TABLE bead_materials ADD COLUMN common_color BOOLEAN NOT NULL DEFAULT 0')
+    if 'market_price_per_500g' not in existing_columns:
+        alter_statements.append('ALTER TABLE bead_materials ADD COLUMN market_price_per_500g FLOAT NOT NULL DEFAULT 50')
+
+    if not alter_statements:
+        return
+
+    for sql in alter_statements:
+        db.session.execute(text(sql))
+
+    db.session.commit()
+
+
+def _resolve_mard_palette_file():
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        return Path(sys._MEIPASS) / 'data' / 'mard_palette_v1.json'
+    return Path(__file__).resolve().parents[1] / 'data' / 'mard_palette_v1.json'
+
+
+def _load_mard_palette():
+    file_path = _resolve_mard_palette_file()
+    if not file_path.exists():
+        return []
+    try:
+        payload = json.loads(file_path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return payload if isinstance(payload, list) else []
+
+
+def _next_material_id():
+    last_item = BeadMaterial.query.order_by(BeadMaterial.id.desc()).first()
+    if not last_item:
+        return 'M001'
+    try:
+        next_number = int(str(last_item.id)[1:]) + 1
+    except (TypeError, ValueError, IndexError):
+        next_number = 1
+
+    candidate = f'M{next_number:03d}'
+    while BeadMaterial.query.get(candidate):
+        next_number += 1
+        candidate = f'M{next_number:03d}'
+    return candidate
+
+
+def ensure_builtin_mard_materials():
+    palette_items = _load_mard_palette()
+    if not palette_items:
+        return
+
+    created = 0
+    updated = 0
+
+    for item in palette_items:
+        code = str(item.get('code') or '').strip().upper()
+        hex_value = str(item.get('hex') or '').strip().lower()
+        if not code or not hex_value:
+            continue
+
+        name = code
+        legacy_name = f'Mard {code}'
+        material = BeadMaterial.query.filter_by(name=name).first()
+        if not material:
+            material = BeadMaterial.query.filter_by(name=legacy_name).first()
+
+        if not material:
+            material = BeadMaterial(
+                id=_next_material_id(),
+                name=name,
+                color_code=hex_value,
+                spec='2.6mm',
+                brand='Mard',
+                unit='gram',
+                safe_stock=0.0,
+                status='active'
+            )
+            db.session.add(material)
+            db.session.add(BeadInventoryBalance(material_id=material.id, current_grams=0.0))
+            created += 1
+            continue
+
+        changed = False
+        if material.name != name:
+            material.name = name
+            changed = True
+        if material.color_code != hex_value:
+            material.color_code = hex_value
+            changed = True
+        if material.brand != 'Mard':
+            material.brand = 'Mard'
+            changed = True
+        if material.unit != 'gram':
+            material.unit = 'gram'
+            changed = True
+        if changed:
+            updated += 1
+
+        balance = BeadInventoryBalance.query.filter_by(material_id=material.id).first()
+        if not balance:
+            db.session.add(BeadInventoryBalance(material_id=material.id, current_grams=0.0))
+
+    if created or updated:
+        db.session.commit()

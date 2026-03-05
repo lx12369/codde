@@ -1,6 +1,8 @@
-﻿<script setup>
-import { ref, reactive, computed, onMounted, watch } from 'vue'
+<script setup>
+import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import api from '@/api'
+import { formatServerDateTime } from '@/utils/dateTime'
+import { useBackdropClose } from '@/utils/modalBackdrop'
 import {
   normalizeBillingRules,
   calculateConsumptionAmount,
@@ -27,11 +29,17 @@ const selectedCustomerDetail = ref(null)
 
 const activities = ref([])
 const billingRules = ref(normalizeBillingRules())
+const { onBackdropMouseDown, onBackdropMouseUp } = useBackdropClose()
 
 const showRechargeDialog = ref(false)
 const showConsumeDialog = ref(false)
 const showDetailDialog = ref(false)
 const showAddCustomerDialog = ref(false)
+const feedback = reactive({
+  tone: 'info',
+  message: ''
+})
+let feedbackTimer = null
 
 const addCustomerForm = reactive({
   name: '',
@@ -150,6 +158,18 @@ function getDefaultTimerPackagePlan(timerType = 'limited') {
 const pageSizeOptions = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
+const visiblePages = computed(() => {
+  const pages = []
+  for (let page = 1; page <= totalPages.value; page += 1) {
+    const shouldShow = page === 1 || page === totalPages.value || Math.abs(page - currentPage.value) <= 1
+    if (shouldShow) {
+      pages.push(page)
+    } else if (pages[pages.length - 1] !== '...') {
+      pages.push('...')
+    }
+  }
+  return pages
+})
 const emptySlots = computed(() => Math.max(0, pageSize.value - customers.value.length))
 const selectedCustomerCount = computed(() => selectedCustomerIds.value.size)
 const hasSelectedCustomers = computed(() => selectedCustomerCount.value > 0)
@@ -226,6 +246,28 @@ const consumeSubmitLabel = computed(() => {
   return '开始计时'
 })
 
+function clearFeedbackTimer() {
+  if (!feedbackTimer) return
+  window.clearTimeout(feedbackTimer)
+  feedbackTimer = null
+}
+
+function showFeedback(tone, message) {
+  feedback.tone = tone
+  feedback.message = message
+  clearFeedbackTimer()
+  feedbackTimer = window.setTimeout(() => {
+    feedback.message = ''
+    feedbackTimer = null
+  }, 3800)
+}
+
+function getFeedbackClass(tone) {
+  if (tone === 'success') return 'management-feedback--success'
+  if (tone === 'error') return 'management-feedback--error'
+  return 'management-feedback--info'
+}
+
 function normalizeCustomer(customer = {}) {
   return {
     ...customer,
@@ -263,13 +305,8 @@ function formatAmount(amount) {
 }
 
 function formatDateTime(dateTime) {
-  if (!dateTime) return '-'
-  return new Date(dateTime).toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
+  return formatServerDateTime(dateTime, {
+    hour12: false
   })
 }
 
@@ -336,9 +373,10 @@ async function submitAddCustomer() {
     if (createdCustomerId) {
       await openCustomerDetail(createdCustomerId)
     }
+    showFeedback('success', '客户已新增。')
   } catch (error) {
     console.error('Failed to create customer:', error)
-    alert(error?.response?.data?.message || error?.message || '新增客户失败')
+    showFeedback('error', error?.response?.data?.message || error?.message || '新增客户失败')
   } finally {
     loading.value = false
   }
@@ -381,9 +419,10 @@ async function submitEditCustomer() {
     showEditCustomerDialog.value = false
     await fetchCustomers()
     await fetchCustomerDetail(selectedCustomerDetail.value.id)
+    showFeedback('success', '客户信息已更新。')
   } catch (error) {
     console.error('Failed to update customer:', error)
-    alert(error?.response?.data?.message || error?.message || '更新客户失败')
+    showFeedback('error', error?.response?.data?.message || error?.message || '更新客户失败')
   } finally {
     editCustomerLoading.value = false
   }
@@ -408,9 +447,10 @@ async function deleteCustomerFromDetail() {
     selectedCustomerDetail.value = null
     selectedCustomerId.value = ''
     await fetchCustomers()
+    showFeedback('success', '客户已删除。')
   } catch (error) {
     console.error('Failed to delete customer:', error)
-    alert(error?.response?.data?.message || error?.message || '删除客户失败')
+    showFeedback('error', error?.response?.data?.message || error?.message || '删除客户失败')
   } finally {
     deleteCustomerLoading.value = false
   }
@@ -468,9 +508,9 @@ async function batchDeleteCustomers() {
 
     const successCount = targetIds.length - failedIds.length
     if (failedIds.length === 0) {
-      alert(`批量删除成功，共删除 ${successCount} 位客户`)
+      showFeedback('success', `批量删除成功，共删除 ${successCount} 位客户。`)
     } else {
-      alert(`已删除 ${successCount} 位客户，删除失败 ${failedIds.length} 位：${failedIds.join('、')}`)
+      showFeedback('error', `已删除 ${successCount} 位客户，删除失败 ${failedIds.length} 位：${failedIds.join('、')}`)
     }
 
     if (
@@ -492,7 +532,7 @@ async function batchDeleteCustomers() {
     }
   } catch (error) {
     console.error('Failed to batch delete customers:', error)
-    alert(error?.response?.data?.message || error?.message || '批量删除失败')
+    showFeedback('error', error?.response?.data?.message || error?.message || '批量删除失败')
   } finally {
     batchDeleteLoading.value = false
   }
@@ -801,9 +841,10 @@ async function submitRecharge() {
     })
     showRechargeDialog.value = false
     await refreshAfterTransaction(rechargeForm.customerId)
+    showFeedback('success', '充值记录已创建。')
   } catch (error) {
     console.error('Failed to create recharge:', error)
-    alert(error?.response?.data?.message || error?.message || '创建充值记录失败')
+    showFeedback('error', error?.response?.data?.message || error?.message || '创建充值记录失败')
   } finally {
     loading.value = false
   }
@@ -815,12 +856,12 @@ async function submitManualConsume() {
   const currentBalance = await fetchCustomerBalance(manualConsumeForm.customerId)
   if (currentBalance !== null && amount > currentBalance) {
     manualConsumeErrors.value = { ...manualConsumeErrors.value, amount: '余额不足' }
-    alert('客户余额不足')
+    showFeedback('error', '客户余额不足。')
     return
   }
 
   const description = manualConsumeForm.meituanCustomer
-    ? `${manualConsumeForm.description} - 美团客户(抽成¥${formatAmount(manualMeituanDeduction.value)})`
+    ? `${manualConsumeForm.description} - 美团客户(抽成￥${formatAmount(manualMeituanDeduction.value)})`
     : manualConsumeForm.description
 
   await api.post('/transactions/consumption', {
@@ -836,7 +877,7 @@ async function submitAutoConsume() {
   const currentBalance = await fetchCustomerBalance(autoConsumeForm.customerId)
   if (currentBalance !== null && amount > currentBalance) {
     autoConsumeErrors.value = { ...autoConsumeErrors.value, total: '余额不足，无法结算' }
-    alert('客户余额不足')
+    showFeedback('error', '客户余额不足。')
     return
   }
 
@@ -847,7 +888,7 @@ async function submitAutoConsume() {
     },
     autoConsumePreview.value,
     autoConsumeForm.meituanCustomer
-      ? `${autoConsumeForm.notes || ''}${autoConsumeForm.notes ? '；' : ''}美团客户(基础费用抽成¥${formatAmount(autoMeituanDeduction.value)})`
+      ? `${autoConsumeForm.notes || ''}${autoConsumeForm.notes ? '；' : ''}美团客户(基础费用抽成￥${formatAmount(autoMeituanDeduction.value)})`
       : autoConsumeForm.notes
   )
 
@@ -877,7 +918,7 @@ async function submitTimerConsume() {
     notes: notesPayload
   })
 
-  alert('计时消费已开始，请到“正在计时”页面完成结算')
+  showFeedback('info', '计时消费已开始，请到“正在计时”页面完成结算。')
 }
 
 async function submitConsumeByMode() {
@@ -886,9 +927,11 @@ async function submitConsumeByMode() {
     if (consumeMode.value === 'manual') {
       await submitManualConsume()
       await refreshAfterTransaction(manualConsumeForm.customerId)
+      showFeedback('success', '消费已完成。')
     } else if (consumeMode.value === 'auto') {
       await submitAutoConsume()
       await refreshAfterTransaction(autoConsumeForm.customerId)
+      showFeedback('success', '自动结算已完成。')
     } else {
       await submitTimerConsume()
       await fetchCustomerDetail(selectedCustomerId.value)
@@ -896,7 +939,7 @@ async function submitConsumeByMode() {
     showConsumeDialog.value = false
   } catch (error) {
     console.error('Failed to handle consume action:', error)
-    alert(error?.response?.data?.message || error?.message || '消费操作失败')
+    showFeedback('error', error?.response?.data?.message || error?.message || '消费操作失败')
   } finally {
     loading.value = false
     await syncConsumeBalance(activeConsumeCustomerId.value)
@@ -939,33 +982,53 @@ watch(
 onMounted(async () => {
   await Promise.all([fetchCustomers(), fetchActivities(), fetchBillingRules()])
 })
+
+onUnmounted(() => {
+  clearFeedbackTimer()
+})
 </script>
 
 <template>
   <div class="space-y-6">
-    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-      <div>
-        <h1 class="text-2xl font-bold text-gray-800">客户管理</h1>
-        <p class="text-gray-500 mt-1">管理客户资料、余额和交易明细</p>
+    <section class="page-hero rounded-3xl p-6 sm:p-8">
+      <div class="relative z-10 flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+        <div class="max-w-2xl space-y-2">
+          <p class="page-hero__eyebrow">Customer Desk</p>
+          <h1 class="page-hero__title">客户管理</h1>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <button
+            @click="batchDeleteCustomers"
+            :disabled="batchDeleteLoading || !hasSelectedCustomers"
+            class="page-hero__action page-hero__action--danger"
+          >
+            {{ batchDeleteButtonText }}
+          </button>
+          <button
+            @click="openAddCustomerDialog"
+            class="page-hero__action"
+          >
+            新增客户
+          </button>
+        </div>
       </div>
-      <div class="flex items-center gap-2">
-        <button
-          @click="batchDeleteCustomers"
-          :disabled="batchDeleteLoading || !hasSelectedCustomers"
-          class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {{ batchDeleteButtonText }}
-        </button>
-        <button
-          @click="openAddCustomerDialog"
-          class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-        >
-          新增客户
-        </button>
-      </div>
-    </div>
+    </section>
 
-    <div class="bg-white rounded-xl shadow-sm p-4 sm:p-6">
+    <Transition name="notice">
+      <div
+        v-if="feedback.message"
+        role="status"
+        aria-live="polite"
+        :class="['management-feedback flex items-center gap-2', getFeedbackClass(feedback.tone)]"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4" />
+        </svg>
+        <span>{{ feedback.message }}</span>
+      </div>
+    </Transition>
+
+    <div class="management-surface p-4 sm:p-6">
       <div class="flex flex-col sm:flex-row gap-3">
         <input
           v-model="searchKeyword"
@@ -988,7 +1051,7 @@ onMounted(async () => {
       </div>
     </div>
 
-    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+    <div class="management-surface overflow-hidden">
       <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
         <h2 class="text-lg font-semibold text-gray-800">客户列表</h2>
         <div class="flex items-center gap-4">
@@ -1028,13 +1091,13 @@ onMounted(async () => {
                 @change.stop="toggleCustomerSelection(customer.id, $event.target.checked)"
                 class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
               >
-              <span class="px-2 py-1 rounded-full text-xs bg-blue-100 text-blue-700">¥{{ formatAmount(customer.balance) }}</span>
+              <span class="px-2 py-1 rounded-full text-xs bg-blue-100 text-blue-700">￥{{ formatAmount(customer.balance) }}</span>
             </div>
           </div>
 
           <div class="mt-3 space-y-1">
-            <p class="text-sm text-gray-600">手机号：{{ customer.phone || '-' }}</p>
             <p class="text-sm text-gray-600">微信号：{{ customer.wechat || '-' }}</p>
+            <p class="text-sm text-gray-600">手机号：{{ customer.phone || '-' }}</p>
           </div>
         </div>
         <div
@@ -1045,497 +1108,386 @@ onMounted(async () => {
         ></div>
       </div>
 
-      <div v-if="total > 0" class="px-5 py-4 border-t border-gray-100 flex items-center justify-between">
-        <div class="flex items-center gap-3">
-          <div class="text-sm text-gray-500">第 {{ currentPage }} / {{ totalPages }} 页</div>
-          <div class="flex items-center gap-2">
-            <span class="text-sm text-gray-500">每页</span>
-            <select
-              v-model.number="pageSize"
-              @change="handlePageSizeChange"
-              class="px-2 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option v-for="size in pageSizeOptions" :key="size" :value="size">{{ size }}人</option>
-            </select>
-          </div>
-        </div>
-        <div class="flex items-center gap-2">
-          <button
-            @click="handlePageChange(currentPage - 1)"
-            :disabled="currentPage === 1"
-            class="px-3 py-1.5 rounded-lg border border-gray-300 text-sm disabled:opacity-50"
-          >
-            上一页
-          </button>
-          <button
-            @click="handlePageChange(currentPage + 1)"
-            :disabled="currentPage === totalPages"
-            class="px-3 py-1.5 rounded-lg border border-gray-300 text-sm disabled:opacity-50"
-          >
-            下一页
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <div
-      v-if="showAddCustomerDialog"
-      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
-      @click.self="showAddCustomerDialog = false"
-    >
-      <div class="bg-white rounded-xl shadow-xl w-full max-w-md mx-4">
-        <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-          <h3 class="text-lg font-semibold text-gray-800">新增客户</h3>
-          <button @click="showAddCustomerDialog = false" class="text-gray-400 hover:text-gray-600 transition-colors">
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-        <div class="p-6 space-y-4">
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">客户姓名</label>
-            <input
-              v-model="addCustomerForm.name"
-              type="text"
-              placeholder="请输入客户姓名"
-              :class="[
-                'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500',
-                addCustomerErrors.name ? 'border-red-500' : 'border-gray-300'
-              ]"
-            >
-            <p v-if="addCustomerErrors.name" class="text-red-500 text-xs mt-1">{{ addCustomerErrors.name }}</p>
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">手机号</label>
-            <input
-              v-model="addCustomerForm.phone"
-              type="text"
-              placeholder="请输入手机号（可选）"
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">微信号</label>
-            <input
-              v-model="addCustomerForm.wechat"
-              type="text"
-              placeholder="请输入微信号（可选）"
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">生日</label>
-            <input
-              v-model="addCustomerForm.birthday"
-              type="date"
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-          </div>
-        </div>
-        <div class="px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
-          <button
-            @click="showAddCustomerDialog = false"
-            class="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-          >
-            取消
-          </button>
-          <button
-            @click="submitAddCustomer"
-            :disabled="loading"
-            class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            确认新增
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <div
-      v-if="showDetailDialog"
-      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
-      @click.self="showDetailDialog = false"
-    >
-      <div class="bg-white rounded-2xl shadow-xl w-full max-w-5xl mx-4 max-h-[90vh] overflow-y-auto">
-        <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-          <div>
-            <h3 class="text-lg font-semibold text-gray-800">客户详情</h3>
-            <p class="text-sm text-gray-500 mt-1">查看余额和交易记录</p>
-          </div>
-          <button @click="showDetailDialog = false" class="text-gray-400 hover:text-gray-600 transition-colors">
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-
-        <div class="p-6">
-          <div v-if="detailLoading" class="py-16 text-center text-gray-500">加载详情中...</div>
-          <div v-else-if="!selectedCustomerDetail" class="py-16 text-center text-gray-500">暂无客户详情</div>
-          <template v-else>
-            <div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
-              <div class="bg-gray-50 rounded-lg p-4">
-                <p class="text-xs text-gray-500">客户编号</p>
-                <p class="text-sm font-semibold text-gray-900 mt-1">{{ selectedCustomerDetail.id }}</p>
-              </div>
-              <div class="bg-gray-50 rounded-lg p-4">
-                <p class="text-xs text-gray-500">客户姓名</p>
-                <p class="text-sm font-semibold text-gray-900 mt-1">{{ selectedCustomerDetail.name }}</p>
-              </div>
-              <div class="bg-gray-50 rounded-lg p-4">
-                <p class="text-xs text-gray-500">手机号</p>
-                <p class="text-sm font-semibold text-gray-900 mt-1">{{ selectedCustomerDetail.phone || '-' }}</p>
-              </div>
-              <div class="bg-gray-50 rounded-lg p-4">
-                <p class="text-xs text-gray-500">微信号</p>
-                <p class="text-sm font-semibold text-gray-900 mt-1">{{ selectedCustomerDetail.wechat || '-' }}</p>
-              </div>
-              <div class="bg-gray-50 rounded-lg p-4">
-                <p class="text-xs text-gray-500">生日</p>
-                <p class="text-sm font-semibold text-gray-900 mt-1">{{ formatDate(selectedCustomerDetail.birthday) }}</p>
-              </div>
-              <div class="bg-blue-50 rounded-lg p-4">
-                <p class="text-xs text-blue-600">当前余额</p>
-                <p class="text-xl font-bold text-blue-700 mt-1">¥{{ formatAmount(selectedCustomerDetail.balance) }}</p>
-              </div>
-            </div>
-
-            <div class="flex items-center gap-2 mb-5">
-              <button
-                @click="openEditCustomerDialog"
-                class="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700"
+      <div v-if="total > 0" class="px-5 py-4 border-t border-gray-100 bg-gradient-to-r from-gray-50 to-white">
+        <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+          <p class="text-sm text-gray-600">
+            显示 {{ (currentPage - 1) * pageSize + 1 }} 到 {{ Math.min(currentPage * pageSize, total) }} 条，共 {{ total }} 条记录
+          </p>
+          <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <label class="flex items-center gap-2 text-sm text-gray-600">
+              <span>每页</span>
+              <select
+                v-model.number="pageSize"
+                @change="handlePageSizeChange"
+                class="h-9 min-w-[92px] px-3 border border-gray-200 rounded-lg bg-white text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
-                编辑基础信息
+                <option v-for="size in pageSizeOptions" :key="size" :value="size">{{ size }}条</option>
+              </select>
+            </label>
+            <div class="flex items-center gap-1">
+              <button
+                @click="handlePageChange(currentPage - 1)"
+                :disabled="currentPage === 1"
+                class="h-9 px-3 rounded-lg border border-gray-200 bg-white text-sm font-medium text-gray-700 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                上一页
               </button>
+              <template v-for="(page, index) in visiblePages" :key="`customer-page-${page}-${index}`">
+                <span v-if="page === '...'" class="w-9 text-center text-sm text-gray-400 select-none">...</span>
+                <button
+                  v-else
+                  @click="handlePageChange(page)"
+                  :class="[
+                    'h-9 min-w-[2.25rem] px-2 rounded-lg border text-sm font-medium transition',
+                    currentPage === page
+                      ? 'border-blue-600 bg-blue-600 text-white shadow-sm shadow-blue-100'
+                      : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-100'
+                  ]"
+                >
+                  {{ page }}
+                </button>
+              </template>
               <button
-                @click="openRechargeDialog(selectedCustomerDetail.id)"
-                class="px-3 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700"
+                @click="handlePageChange(currentPage + 1)"
+                :disabled="currentPage === totalPages"
+                class="h-9 px-3 rounded-lg border border-gray-200 bg-white text-sm font-medium text-gray-700 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-45"
               >
-                充值
-              </button>
-              <button
-                @click="openConsumeDialog(selectedCustomerDetail.id)"
-                class="px-3 py-1.5 bg-orange-600 text-white text-sm rounded-lg hover:bg-orange-700"
-              >
-                消费
-              </button>
-              <button
-                @click="deleteCustomerFromDetail"
-                :disabled="deleteCustomerLoading"
-                class="px-3 py-1.5 bg-red-600 text-white text-sm rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                删除客户
+                下一页
               </button>
             </div>
-
-            <h4 class="text-sm font-semibold text-gray-700 mb-3">交易记录</h4>
-            <div class="border border-gray-200 rounded-lg overflow-x-auto">
-              <table class="min-w-full divide-y divide-gray-200">
-                <thead class="bg-gray-50">
-                  <tr>
-                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">类型</th>
-                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">金额</th>
-                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">说明</th>
-                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">时间</th>
-                  </tr>
-                </thead>
-                <tbody class="bg-white divide-y divide-gray-200">
-                  <tr v-if="customerTransactions.length === 0">
-                    <td colspan="4" class="px-4 py-8 text-center text-gray-500">暂无交易记录</td>
-                  </tr>
-                  <tr v-for="transaction in customerTransactions" :key="transaction.id">
-                    <td class="px-4 py-2">
-                      <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium" :class="getTransactionTypeClass(transaction.type)">
-                        {{ getTransactionTypeLabel(transaction.type) }}
-                      </span>
-                    </td>
-                    <td class="px-4 py-2 text-sm">
-                      <div :class="transaction.type === 'recharge' ? 'text-green-600' : 'text-orange-600'">
-                        {{ transaction.type === 'recharge' ? '+' : '-' }}¥{{ formatAmount(transaction.amount) }}
-                      </div>
-                      <div v-if="transaction.type === 'recharge' && transaction.bonusAmount > 0" class="text-xs text-green-600">
-                        赠送 +¥{{ formatAmount(transaction.bonusAmount) }}
-                      </div>
-                    </td>
-                    <td class="px-4 py-2 text-sm text-gray-700">
-                      <span v-if="transaction.type === 'recharge'">
-                        {{ paymentMethods.find((m) => m.value === transaction.paymentMethod)?.label || transaction.paymentMethod || '-' }}
-                      </span>
-                      <span v-else>{{ transaction.description || '-' }}</span>
-                    </td>
-                    <td class="px-4 py-2 text-sm text-gray-500">{{ formatDateTime(transaction.createdAt) }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </template>
+          </div>
         </div>
       </div>
     </div>
 
-    <div
-      v-if="showEditCustomerDialog"
-      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60]"
-      @click.self="showEditCustomerDialog = false"
-    >
-      <div class="bg-white rounded-xl shadow-xl w-full max-w-md mx-4">
-        <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-          <h3 class="text-lg font-semibold text-gray-800">编辑基础信息</h3>
-          <button @click="showEditCustomerDialog = false" class="text-gray-400 hover:text-gray-600 transition-colors">
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-
-        <div class="p-6 space-y-4">
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">客户编号</label>
-            <input
-              :value="editCustomerForm.id"
-              type="text"
-              disabled
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-100 text-gray-500"
-            >
+    <Teleport to="body">
+      <div
+        v-if="showAddCustomerDialog"
+        class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+        @mousedown="onBackdropMouseDown('customers-add', $event)"
+        @mouseup="onBackdropMouseUp('customers-add', $event) && (showAddCustomerDialog = false)"
+      >
+        <div class="bg-white rounded-xl shadow-xl w-full max-w-md mx-4">
+          <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+            <h3 class="text-lg font-semibold text-gray-800">新增客户</h3>
+            <button @click="showAddCustomerDialog = false" class="text-gray-400 hover:text-gray-600 transition-colors">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
           </div>
-
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">当前余额</label>
-            <input
-              :value="`¥${formatAmount(editCustomerForm.balance)}`"
-              type="text"
-              disabled
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-100 text-gray-500"
-            >
-          </div>
-
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">客户姓名</label>
-            <input
-              v-model="editCustomerForm.name"
-              type="text"
-              placeholder="请输入客户姓名"
-              :class="[
-                'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-                editCustomerErrors.name ? 'border-red-500' : 'border-gray-300'
-              ]"
-            >
-            <p v-if="editCustomerErrors.name" class="text-red-500 text-xs mt-1">
-              {{ editCustomerErrors.name }}
-            </p>
-          </div>
-
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">手机号</label>
-            <input
-              v-model="editCustomerForm.phone"
-              type="text"
-              placeholder="请输入手机号（可选）"
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-          </div>
-
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">微信号</label>
-            <input
-              v-model="editCustomerForm.wechat"
-              type="text"
-              placeholder="请输入微信号（可选）"
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-          </div>
-
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">生日</label>
-            <input
-              v-model="editCustomerForm.birthday"
-              type="date"
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-          </div>
-        </div>
-
-        <div class="px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
-          <button
-            @click="showEditCustomerDialog = false"
-            class="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-          >
-            取消
-          </button>
-          <button
-            @click="submitEditCustomer"
-            :disabled="editCustomerLoading"
-            class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            保存
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <div
-      v-if="showRechargeDialog"
-      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
-      @click.self="showRechargeDialog = false"
-    >
-      <div class="bg-white rounded-xl shadow-xl w-full max-w-md mx-4">
-        <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-          <h3 class="text-lg font-semibold text-gray-800">新增充值</h3>
-          <button @click="showRechargeDialog = false" class="text-gray-400 hover:text-gray-600 transition-colors">
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-        <div class="p-6 space-y-4">
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">选择客户</label>
-            <select
-              v-model="rechargeForm.customerId"
-              :class="[
-                'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-                rechargeErrors.customerId ? 'border-red-500' : 'border-gray-300'
-              ]"
-            >
-              <option disabled value="">请选择客户</option>
-              <option v-for="customer in validCustomers" :key="customer.id" :value="customer.id">
-                {{ customer.name }} ({{ customer.phone }})
-              </option>
-            </select>
-            <p v-if="rechargeErrors.customerId" class="text-red-500 text-xs mt-1">
-              {{ rechargeErrors.customerId }}
-            </p>
-          </div>
-
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">充值金额</label>
-            <div class="relative">
-              <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">¥</span>
+          <div class="p-6 space-y-4">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">客户姓名</label>
               <input
-                v-model="rechargeForm.amount"
-                type="number"
-                step="0.01"
-                min="0"
-                placeholder="0.00"
+                v-model="addCustomerForm.name"
+                type="text"
+                placeholder="请输入客户姓名"
                 :class="[
-                  'w-full pl-8 pr-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-                  rechargeErrors.amount ? 'border-red-500' : 'border-gray-300'
+                  'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500',
+                  addCustomerErrors.name ? 'border-red-500' : 'border-gray-300'
                 ]"
               >
+              <p v-if="addCustomerErrors.name" class="text-red-500 text-xs mt-1">{{ addCustomerErrors.name }}</p>
             </div>
-            <p v-if="rechargeErrors.amount" class="text-red-500 text-xs mt-1">
-              {{ rechargeErrors.amount }}
-            </p>
-          </div>
-
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">赠送金额</label>
-            <div class="relative">
-              <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">¥</span>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">手机号</label>
               <input
-                v-model="rechargeForm.bonusAmount"
-                type="number"
-                step="0.01"
-                min="0"
-                :disabled="Boolean(rechargeForm.activityId)"
-                placeholder="0.00"
-                class="w-full pl-8 pr-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100 disabled:text-gray-500"
+                v-model="addCustomerForm.phone"
+                type="text"
+                placeholder="请输入手机号（可选）"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
             </div>
-            <p v-if="rechargeForm.activityId" class="text-xs text-gray-500 mt-1">已按活动规则自动计算赠送金额。</p>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">微信号</label>
+              <input
+                v-model="addCustomerForm.wechat"
+                type="text"
+                placeholder="请输入微信号（可选）"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">生日</label>
+              <input
+                v-model="addCustomerForm.birthday"
+                type="date"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+            </div>
           </div>
-
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">支付方式</label>
-            <select
-              v-model="rechargeForm.paymentMethod"
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          <div class="px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
+            <button
+              @click="showAddCustomerDialog = false"
+              class="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
             >
-              <option v-for="method in paymentMethods" :key="method.value" :value="method.value">
-                {{ method.label }}
-              </option>
-            </select>
-          </div>
-
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">选择活动（可选）</label>
-            <select
-              v-model="rechargeForm.activityId"
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              取消
+            </button>
+            <button
+              @click="submitAddCustomer"
+              :disabled="loading"
+              class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <option value="">无</option>
-              <option v-for="activity in activities" :key="activity.id" :value="activity.id">
-                {{ activity.name }}（每满¥{{ formatAmount(activity.minRechargeAmount) }}送¥{{ formatAmount(activity.bonusAmount) }}）
-              </option>
-            </select>
+              确认新增
+            </button>
           </div>
-        </div>
-        <div class="px-6 py-4 border-t border-gray-200 flex justify-end space-x-3">
-          <button
-            @click="showRechargeDialog = false"
-            class="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-          >
-            取消
-          </button>
-          <button
-            @click="submitRecharge"
-            :disabled="loading"
-            class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            确认充值
-          </button>
         </div>
       </div>
-    </div>
+    </Teleport>
 
-    <div
-      v-if="showConsumeDialog"
-      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
-      @click.self="showConsumeDialog = false"
-    >
-      <div class="bg-white rounded-xl shadow-xl w-full max-w-3xl mx-4 max-h-[90vh] overflow-y-auto">
-        <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-          <h3 class="text-lg font-semibold text-gray-800">新增消费</h3>
-          <button @click="showConsumeDialog = false" class="text-gray-400 hover:text-gray-600 transition-colors">
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-
-        <div class="p-6 space-y-4">
-          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
-            <button
-              v-for="mode in consumeModes"
-              :key="mode.value"
-              @click="consumeMode = mode.value"
-              :class="[
-                'px-4 py-2 rounded-lg border text-sm font-medium transition-colors',
-                consumeMode === mode.value
-                  ? 'border-blue-500 bg-blue-50 text-blue-700'
-                  : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
-              ]"
-            >
-              {{ mode.label }}
+    <Teleport to="body">
+      <div
+        v-if="showDetailDialog"
+        class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+        @mousedown="onBackdropMouseDown('customers-detail', $event)"
+        @mouseup="onBackdropMouseUp('customers-detail', $event) && (showDetailDialog = false)"
+      >
+        <div class="bg-white rounded-2xl shadow-xl w-full max-w-5xl mx-4 max-h-[90vh] overflow-y-auto">
+          <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+            <div>
+              <h3 class="text-lg font-semibold text-gray-800">客户详情</h3>
+              <p class="text-sm text-gray-500 mt-1">查看余额和交易记录</p>
+            </div>
+            <button @click="showDetailDialog = false" class="text-gray-400 hover:text-gray-600 transition-colors">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
             </button>
           </div>
 
-          <div class="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-sm">
-            <span v-if="consumeBalanceLoading" class="text-blue-700">正在获取客户余额...</span>
-            <span v-else-if="consumeCurrentBalance !== null" class="text-blue-700">
-              当前客户余额: <strong>¥{{ formatAmount(consumeCurrentBalance) }}</strong>
-            </span>
-            <span v-else class="text-blue-700">请选择客户以查看余额</span>
+          <div class="p-6">
+            <div v-if="detailLoading" class="py-16 text-center text-gray-500">加载详情中...</div>
+            <div v-else-if="!selectedCustomerDetail" class="py-16 text-center text-gray-500">暂无客户详情</div>
+            <template v-else>
+              <div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
+                <div class="bg-gray-50 rounded-lg p-4">
+                  <p class="text-xs text-gray-500">客户编号</p>
+                  <p class="text-sm font-semibold text-gray-900 mt-1">{{ selectedCustomerDetail.id }}</p>
+                </div>
+                <div class="bg-gray-50 rounded-lg p-4">
+                  <p class="text-xs text-gray-500">客户姓名</p>
+                  <p class="text-sm font-semibold text-gray-900 mt-1">{{ selectedCustomerDetail.name }}</p>
+                </div>
+                <div class="bg-gray-50 rounded-lg p-4">
+                  <p class="text-xs text-gray-500">手机号</p>
+                  <p class="text-sm font-semibold text-gray-900 mt-1">{{ selectedCustomerDetail.phone || '-' }}</p>
+                </div>
+                <div class="bg-gray-50 rounded-lg p-4">
+                  <p class="text-xs text-gray-500">微信号</p>
+                  <p class="text-sm font-semibold text-gray-900 mt-1">{{ selectedCustomerDetail.wechat || '-' }}</p>
+                </div>
+                <div class="bg-gray-50 rounded-lg p-4">
+                  <p class="text-xs text-gray-500">生日</p>
+                  <p class="text-sm font-semibold text-gray-900 mt-1">{{ formatDate(selectedCustomerDetail.birthday) }}</p>
+                </div>
+                <div class="bg-blue-50 rounded-lg p-4">
+                  <p class="text-xs text-blue-600">当前余额</p>
+                  <p class="text-xl font-bold text-blue-700 mt-1">￥{{ formatAmount(selectedCustomerDetail.balance) }}</p>
+                </div>
+              </div>
+
+              <div class="flex items-center gap-2 mb-5">
+                <button
+                  @click="openEditCustomerDialog"
+                  class="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700"
+                >
+                  编辑基础信息
+                </button>
+                <button
+                  @click="openRechargeDialog(selectedCustomerDetail.id)"
+                  class="px-3 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700"
+                >
+                  充值
+                </button>
+                <button
+                  @click="openConsumeDialog(selectedCustomerDetail.id)"
+                  class="px-3 py-1.5 bg-orange-600 text-white text-sm rounded-lg hover:bg-orange-700"
+                >
+                  消费
+                </button>
+                <button
+                  @click="deleteCustomerFromDetail"
+                  :disabled="deleteCustomerLoading"
+                  class="px-3 py-1.5 bg-red-600 text-white text-sm rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  删除客户
+                </button>
+              </div>
+
+              <h4 class="text-sm font-semibold text-gray-700 mb-3">交易记录</h4>
+              <div class="border border-gray-200 rounded-lg overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                  <thead class="bg-gray-50">
+                    <tr>
+                      <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">类型</th>
+                      <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">金额</th>
+                      <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">说明</th>
+                      <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">时间</th>
+                    </tr>
+                  </thead>
+                  <tbody class="bg-white divide-y divide-gray-200">
+                    <tr v-if="customerTransactions.length === 0">
+                      <td colspan="4" class="px-4 py-8 text-center text-gray-500">暂无交易记录</td>
+                    </tr>
+                    <tr v-for="transaction in customerTransactions" :key="transaction.id">
+                      <td class="px-4 py-2">
+                        <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium" :class="getTransactionTypeClass(transaction.type)">
+                          {{ getTransactionTypeLabel(transaction.type) }}
+                        </span>
+                      </td>
+                      <td class="px-4 py-2 text-sm">
+                        <div :class="transaction.type === 'recharge' ? 'text-green-600' : 'text-orange-600'">
+                          {{ transaction.type === 'recharge' ? '+' : '-' }}￥{{ formatAmount(transaction.amount) }}
+                        </div>
+                        <div v-if="transaction.type === 'recharge' && transaction.bonusAmount > 0" class="text-xs text-green-600">
+                          赠送 +￥{{ formatAmount(transaction.bonusAmount) }}
+                        </div>
+                      </td>
+                      <td class="px-4 py-2 text-sm text-gray-700">
+                        <span v-if="transaction.type === 'recharge'">
+                          {{ paymentMethods.find((m) => m.value === transaction.paymentMethod)?.label || transaction.paymentMethod || '-' }}
+                        </span>
+                        <span v-else>{{ transaction.description || '-' }}</span>
+                      </td>
+                      <td class="px-4 py-2 text-sm text-gray-500">{{ formatDateTime(transaction.createdAt) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div
+        v-if="showEditCustomerDialog"
+        class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60]"
+        @mousedown="onBackdropMouseDown('customers-edit', $event)"
+        @mouseup="onBackdropMouseUp('customers-edit', $event) && (showEditCustomerDialog = false)"
+      >
+        <div class="bg-white rounded-xl shadow-xl w-full max-w-md mx-4">
+          <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+            <h3 class="text-lg font-semibold text-gray-800">编辑基础信息</h3>
+            <button @click="showEditCustomerDialog = false" class="text-gray-400 hover:text-gray-600 transition-colors">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
           </div>
 
-          <div v-if="consumeMode === 'manual'" class="space-y-4">
+          <div class="p-6 space-y-4">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">客户编号</label>
+              <input
+                :value="editCustomerForm.id"
+                type="text"
+                disabled
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-100 text-gray-500"
+              >
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">当前余额</label>
+              <input
+                :value="`￥${formatAmount(editCustomerForm.balance)}`"
+                type="text"
+                disabled
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-100 text-gray-500"
+              >
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">客户姓名</label>
+              <input
+                v-model="editCustomerForm.name"
+                type="text"
+                placeholder="请输入客户姓名"
+                :class="[
+                  'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
+                  editCustomerErrors.name ? 'border-red-500' : 'border-gray-300'
+                ]"
+              >
+              <p v-if="editCustomerErrors.name" class="text-red-500 text-xs mt-1">
+                {{ editCustomerErrors.name }}
+              </p>
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">手机号</label>
+              <input
+                v-model="editCustomerForm.phone"
+                type="text"
+                placeholder="请输入手机号（可选）"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">微信号</label>
+              <input
+                v-model="editCustomerForm.wechat"
+                type="text"
+                placeholder="请输入微信号（可选）"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">生日</label>
+              <input
+                v-model="editCustomerForm.birthday"
+                type="date"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+            </div>
+          </div>
+
+          <div class="px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
+            <button
+              @click="showEditCustomerDialog = false"
+              class="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              取消
+            </button>
+            <button
+              @click="submitEditCustomer"
+              :disabled="editCustomerLoading"
+              class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              保存
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div
+        v-if="showRechargeDialog"
+        class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+        @mousedown="onBackdropMouseDown('customers-recharge', $event)"
+        @mouseup="onBackdropMouseUp('customers-recharge', $event) && (showRechargeDialog = false)"
+      >
+        <div class="bg-white rounded-xl shadow-xl w-full max-w-md mx-4">
+          <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+            <h3 class="text-lg font-semibold text-gray-800">新增充值</h3>
+            <button @click="showRechargeDialog = false" class="text-gray-400 hover:text-gray-600 transition-colors">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <div class="p-6 space-y-4">
             <div>
               <label class="block text-sm font-medium text-gray-700 mb-1">选择客户</label>
               <select
-                v-model="manualConsumeForm.customerId"
+                v-model="rechargeForm.customerId"
                 :class="[
                   'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-                  manualConsumeErrors.customerId ? 'border-red-500' : 'border-gray-300'
+                  rechargeErrors.customerId ? 'border-red-500' : 'border-gray-300'
                 ]"
               >
                 <option disabled value="">请选择客户</option>
@@ -1543,243 +1495,390 @@ onMounted(async () => {
                   {{ customer.name }} ({{ customer.phone }})
                 </option>
               </select>
-              <p v-if="manualConsumeErrors.customerId" class="text-red-500 text-xs mt-1">
-                {{ manualConsumeErrors.customerId }}
+              <p v-if="rechargeErrors.customerId" class="text-red-500 text-xs mt-1">
+                {{ rechargeErrors.customerId }}
               </p>
             </div>
+
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">消费金额</label>
+              <label class="block text-sm font-medium text-gray-700 mb-1">充值金额</label>
               <div class="relative">
-                <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">¥</span>
+                <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">￥</span>
                 <input
-                  v-model="manualConsumeForm.amount"
+                  v-model="rechargeForm.amount"
                   type="number"
                   step="0.01"
                   min="0"
                   placeholder="0.00"
                   :class="[
                     'w-full pl-8 pr-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-                    manualConsumeErrors.amount ? 'border-red-500' : 'border-gray-300'
+                    rechargeErrors.amount ? 'border-red-500' : 'border-gray-300'
                   ]"
                 >
               </div>
-              <p v-if="manualConsumeErrors.amount" class="text-red-500 text-xs mt-1">
-                {{ manualConsumeErrors.amount }}
+              <p v-if="rechargeErrors.amount" class="text-red-500 text-xs mt-1">
+                {{ rechargeErrors.amount }}
               </p>
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">描述</label>
-              <textarea
-                v-model="manualConsumeForm.description"
-                rows="3"
-                placeholder="请输入消费描述"
-                :class="[
-                  'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none',
-                  manualConsumeErrors.description ? 'border-red-500' : 'border-gray-300'
-                ]"
-              ></textarea>
-              <p v-if="manualConsumeErrors.description" class="text-red-500 text-xs mt-1">
-                {{ manualConsumeErrors.description }}
-              </p>
+              <label class="block text-sm font-medium text-gray-700 mb-1">赠送金额</label>
+              <div class="relative">
+                <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">￥</span>
+                <input
+                  v-model="rechargeForm.bonusAmount"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  :disabled="Boolean(rechargeForm.activityId)"
+                  placeholder="0.00"
+                  class="w-full pl-8 pr-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100 disabled:text-gray-500"
+                >
+              </div>
+              <p v-if="rechargeForm.activityId" class="text-xs text-gray-500 mt-1">已按活动规则自动计算赠送金额。</p>
             </div>
 
-            <label class="inline-flex items-center gap-2 text-sm text-gray-700">
-              <input
-                v-model="manualConsumeForm.meituanCustomer"
-                type="checkbox"
-                class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-              >
-              美团客户（消费金额抽成7%）
-            </label>
-
-            <div v-if="manualConsumeForm.meituanCustomer" class="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800 space-y-1">
-              <p>原始金额：¥{{ formatAmount(manualInputAmount) }}</p>
-              <p>美团抽成：-¥{{ formatAmount(manualMeituanDeduction) }}</p>
-              <p class="font-semibold">结算金额：¥{{ formatAmount(manualFinalAmount) }}</p>
-            </div>
-          </div>
-
-          <div v-else-if="consumeMode === 'auto'" class="space-y-4">
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">选择客户</label>
+              <label class="block text-sm font-medium text-gray-700 mb-1">支付方式</label>
               <select
-                v-model="autoConsumeForm.customerId"
-                :class="[
-                  'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-                  autoConsumeErrors.customerId ? 'border-red-500' : 'border-gray-300'
-                ]"
+                v-model="rechargeForm.paymentMethod"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               >
-                <option disabled value="">请选择客户</option>
-                <option v-for="customer in validCustomers" :key="customer.id" :value="customer.id">
-                  {{ customer.name }} ({{ customer.phone }})
+                <option v-for="method in paymentMethods" :key="method.value" :value="method.value">
+                  {{ method.label }}
                 </option>
               </select>
-              <p v-if="autoConsumeErrors.customerId" class="text-red-500 text-xs mt-1">{{ autoConsumeErrors.customerId }}</p>
-            </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">计费类型</label>
-                <select v-model="autoConsumeForm.billingType" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-                  <option value="limited">限时计费</option>
-                  <option value="weekday">工作日计费</option>
-                  <option value="weekend">周末计费</option>
-                </select>
-              </div>
-
-              <div v-if="autoConsumeForm.billingType === 'limited'">
-                <label class="block text-sm font-medium text-gray-700 mb-1">时长</label>
-                <select v-model="autoConsumeForm.duration" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-                  <option value="1">1小时</option>
-                  <option value="2">2小时</option>
-                </select>
-              </div>
-
-              <div v-if="autoConsumeForm.billingType === 'weekday'">
-                <label class="block text-sm font-medium text-gray-700 mb-1">工作日方案</label>
-                <select v-model="autoConsumeForm.weekdayType" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-                  <option value="singleUnlimited">单人不限时不限板</option>
-                  <option value="doubleUnlimited">双人不限时不限板</option>
-                  <option value="singleLimited">单人不限时限板</option>
-                </select>
-              </div>
-
-              <div v-if="autoConsumeForm.billingType === 'weekend'">
-                <label class="block text-sm font-medium text-gray-700 mb-1">周末方案</label>
-                <select v-model="autoConsumeForm.weekendType" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-                  <option value="singleUnlimited">单人不限时不限板</option>
-                  <option value="doubleUnlimited">双人不限时不限板</option>
-                  <option value="singleLimited">单人不限时限板</option>
-                </select>
-              </div>
-
-              <div v-if="autoConsumeForm.billingType === 'limited'">
-                <label class="block text-sm font-medium text-gray-700 mb-1">超时分钟</label>
-                <input v-model.number="autoConsumeForm.overtimeMinutes" type="number" min="0" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-              </div>
-            </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">大图数量</label>
-                <input v-model.number="autoConsumeForm.largeImages" type="number" min="0" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-              </div>
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">超量小图</label>
-                <input v-model.number="autoConsumeForm.extraSmallImages" type="number" min="0" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-              </div>
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">超量大图</label>
-                <input v-model.number="autoConsumeForm.extraLargeImages" type="number" min="0" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-              </div>
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">附加费用</label>
-                <input v-model.number="autoConsumeForm.additionalFee" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-              </div>
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">备注</label>
-              <textarea v-model="autoConsumeForm.notes" rows="2" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" placeholder="可选"></textarea>
-            </div>
-
-            <label class="inline-flex items-center gap-2 text-sm text-gray-700">
-              <input
-                v-model="autoConsumeForm.meituanCustomer"
-                type="checkbox"
-                class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-              >
-              美团客户（基础费用抽成7%）
-            </label>
-
-            <div class="bg-green-50 border border-green-200 rounded-lg p-4 text-sm text-green-800 space-y-1">
-              <p>计费类型: {{ getBillingTypeLabel(autoConsumeForm.billingType) }}</p>
-              <p>基础费用: ¥{{ formatAmount(autoConsumePreview.baseFee) }}</p>
-              <p>超时费用: ¥{{ formatAmount(autoConsumePreview.overtimeFee) }}</p>
-              <p>耗材费用: ¥{{ formatAmount(autoConsumePreview.materialFee) }}</p>
-              <p>附加费用: ¥{{ formatAmount(autoConsumePreview.additionalFee) }}</p>
-              <p v-if="autoConsumeForm.meituanCustomer">美团抽成: -¥{{ formatAmount(autoMeituanDeduction) }}</p>
-              <p class="font-semibold text-base">
-                结算金额: ¥{{ formatAmount(autoConsumeForm.meituanCustomer ? autoFinalAmount : autoConsumePreview.total) }}
-              </p>
-            </div>
-            <p v-if="autoConsumeErrors.total" class="text-red-500 text-xs mt-1">{{ autoConsumeErrors.total }}</p>
-          </div>
-
-          <div v-else class="space-y-4">
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">选择客户</label>
-              <select v-model="timerConsumeForm.customerId" :class="['w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500', timerConsumeErrors.customerId ? 'border-red-500' : 'border-gray-300']">
-                <option disabled value="">请选择客户</option>
-                <option v-for="customer in validCustomers" :key="customer.id" :value="customer.id">{{ customer.name }} ({{ customer.phone }})</option>
-              </select>
-              <p v-if="timerConsumeErrors.customerId" class="text-red-500 text-xs mt-1">{{ timerConsumeErrors.customerId }}</p>
-            </div>
-
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">计时类型</label>
-              <select v-model="timerConsumeForm.timerType" :class="['w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500', timerConsumeErrors.timerType ? 'border-red-500' : 'border-gray-300']">
-                <option v-for="item in timerTypeOptions" :key="item.value" :value="item.value">
-                  {{ item.label }}
-                </option>
-              </select>
-              <p v-if="timerConsumeErrors.timerType" class="text-red-500 text-xs mt-1">{{ timerConsumeErrors.timerType }}</p>
-            </div>
-
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">套餐方案</label>
+              <label class="block text-sm font-medium text-gray-700 mb-1">选择活动（可选）</label>
               <select
-                v-model="timerConsumeForm.packagePlan"
-                :class="[
-                  'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500',
-                  timerConsumeErrors.packagePlan ? 'border-red-500' : 'border-gray-300'
-                ]"
+                v-model="rechargeForm.activityId"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               >
-                <option v-for="item in timerPackagePlanOptions" :key="item.value" :value="item.value">
-                  {{ item.label }}
+                <option value="">无</option>
+                <option v-for="activity in activities" :key="activity.id" :value="activity.id">
+                  {{ activity.name }}（每满￥{{ formatAmount(activity.minRechargeAmount) }}送￥{{ formatAmount(activity.bonusAmount) }}）
                 </option>
               </select>
-              <p v-if="timerConsumeErrors.packagePlan" class="text-red-500 text-xs mt-1">{{ timerConsumeErrors.packagePlan }}</p>
-            </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">大图数量</label>
-                <input v-model.number="timerConsumeForm.largeImages" type="number" min="0" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-              </div>
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">超量小图</label>
-                <input v-model.number="timerConsumeForm.extraSmallImages" type="number" min="0" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-              </div>
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">超量大图</label>
-                <input v-model.number="timerConsumeForm.extraLargeImages" type="number" min="0" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-              </div>
-            </div>
-
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">备注</label>
-              <textarea v-model="timerConsumeForm.notes" rows="2" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" placeholder="开始计时前的备注"></textarea>
-            </div>
-
-            <div class="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800">
-              计时开始后，请前往“正在计时”页面完成结算。
             </div>
           </div>
-        </div>
-
-        <div class="px-6 py-4 border-t border-gray-200 flex justify-end space-x-3">
-          <button @click="showConsumeDialog = false" class="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors">取消</button>
-          <button
-            @click="submitConsumeByMode"
-            :disabled="loading"
-            class="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {{ consumeSubmitLabel }}
-          </button>
+          <div class="px-6 py-4 border-t border-gray-200 flex justify-end space-x-3">
+            <button
+              @click="showRechargeDialog = false"
+              class="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              取消
+            </button>
+            <button
+              @click="submitRecharge"
+              :disabled="loading"
+              class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              确认充值
+            </button>
+          </div>
         </div>
       </div>
-    </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div
+        v-if="showConsumeDialog"
+        class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+        @mousedown="onBackdropMouseDown('customers-consume', $event)"
+        @mouseup="onBackdropMouseUp('customers-consume', $event) && (showConsumeDialog = false)"
+      >
+        <div class="bg-white rounded-xl shadow-xl w-full max-w-3xl mx-4 max-h-[90vh] overflow-y-auto">
+          <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+            <h3 class="text-lg font-semibold text-gray-800">新增消费</h3>
+            <button @click="showConsumeDialog = false" class="text-gray-400 hover:text-gray-600 transition-colors">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          <div class="p-6 space-y-4">
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <button
+                v-for="mode in consumeModes"
+                :key="mode.value"
+                @click="consumeMode = mode.value"
+                :class="[
+                  'px-4 py-2 rounded-lg border text-sm font-medium transition-colors',
+                  consumeMode === mode.value
+                    ? 'border-blue-500 bg-blue-50 text-blue-700'
+                    : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
+                ]"
+              >
+                {{ mode.label }}
+              </button>
+            </div>
+
+            <div class="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-sm">
+              <span v-if="consumeBalanceLoading" class="text-blue-700">正在获取客户余额...</span>
+              <span v-else-if="consumeCurrentBalance !== null" class="text-blue-700">
+                当前客户余额: <strong>￥{{ formatAmount(consumeCurrentBalance) }}</strong>
+              </span>
+              <span v-else class="text-blue-700">请选择客户以查看余额</span>
+            </div>
+
+            <div v-if="consumeMode === 'manual'" class="space-y-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">选择客户</label>
+                <select
+                  v-model="manualConsumeForm.customerId"
+                  :class="[
+                    'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
+                    manualConsumeErrors.customerId ? 'border-red-500' : 'border-gray-300'
+                  ]"
+                >
+                  <option disabled value="">请选择客户</option>
+                  <option v-for="customer in validCustomers" :key="customer.id" :value="customer.id">
+                    {{ customer.name }} ({{ customer.phone }})
+                  </option>
+                </select>
+                <p v-if="manualConsumeErrors.customerId" class="text-red-500 text-xs mt-1">
+                  {{ manualConsumeErrors.customerId }}
+                </p>
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">消费金额</label>
+                <div class="relative">
+                  <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">￥</span>
+                  <input
+                    v-model="manualConsumeForm.amount"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="0.00"
+                    :class="[
+                      'w-full pl-8 pr-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
+                      manualConsumeErrors.amount ? 'border-red-500' : 'border-gray-300'
+                    ]"
+                  >
+                </div>
+                <p v-if="manualConsumeErrors.amount" class="text-red-500 text-xs mt-1">
+                  {{ manualConsumeErrors.amount }}
+                </p>
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">描述</label>
+                <textarea
+                  v-model="manualConsumeForm.description"
+                  rows="3"
+                  placeholder="请输入消费描述"
+                  :class="[
+                    'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none',
+                    manualConsumeErrors.description ? 'border-red-500' : 'border-gray-300'
+                  ]"
+                ></textarea>
+                <p v-if="manualConsumeErrors.description" class="text-red-500 text-xs mt-1">
+                  {{ manualConsumeErrors.description }}
+                </p>
+              </div>
+
+              <label class="inline-flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  v-model="manualConsumeForm.meituanCustomer"
+                  type="checkbox"
+                  class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                >
+                美团客户（消费金额抽成7%）
+              </label>
+
+              <div v-if="manualConsumeForm.meituanCustomer" class="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800 space-y-1">
+                <p>原始金额：￥{{ formatAmount(manualInputAmount) }}</p>
+                <p>美团抽成：-￥{{ formatAmount(manualMeituanDeduction) }}</p>
+                <p class="font-semibold">结算金额：￥{{ formatAmount(manualFinalAmount) }}</p>
+              </div>
+            </div>
+
+            <div v-else-if="consumeMode === 'auto'" class="space-y-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">选择客户</label>
+                <select
+                  v-model="autoConsumeForm.customerId"
+                  :class="[
+                    'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
+                    autoConsumeErrors.customerId ? 'border-red-500' : 'border-gray-300'
+                  ]"
+                >
+                  <option disabled value="">请选择客户</option>
+                  <option v-for="customer in validCustomers" :key="customer.id" :value="customer.id">
+                    {{ customer.name }} ({{ customer.phone }})
+                  </option>
+                </select>
+                <p v-if="autoConsumeErrors.customerId" class="text-red-500 text-xs mt-1">{{ autoConsumeErrors.customerId }}</p>
+              </div>
+
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">计费类型</label>
+                  <select v-model="autoConsumeForm.billingType" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="limited">限时计费</option>
+                    <option value="weekday">工作日计费</option>
+                    <option value="weekend">周末计费</option>
+                  </select>
+                </div>
+
+                <div v-if="autoConsumeForm.billingType === 'limited'">
+                  <label class="block text-sm font-medium text-gray-700 mb-1">时长</label>
+                  <select v-model="autoConsumeForm.duration" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="1">1小时</option>
+                    <option value="2">2小时</option>
+                  </select>
+                </div>
+
+                <div v-if="autoConsumeForm.billingType === 'weekday'">
+                  <label class="block text-sm font-medium text-gray-700 mb-1">工作日方案</label>
+                  <select v-model="autoConsumeForm.weekdayType" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="singleUnlimited">单人不限时不限板</option>
+                    <option value="doubleUnlimited">双人不限时不限板</option>
+                    <option value="singleLimited">单人不限时限板</option>
+                  </select>
+                </div>
+
+                <div v-if="autoConsumeForm.billingType === 'weekend'">
+                  <label class="block text-sm font-medium text-gray-700 mb-1">周末方案</label>
+                  <select v-model="autoConsumeForm.weekendType" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="singleUnlimited">单人不限时不限板</option>
+                    <option value="doubleUnlimited">双人不限时不限板</option>
+                    <option value="singleLimited">单人不限时限板</option>
+                  </select>
+                </div>
+
+                <div v-if="autoConsumeForm.billingType === 'limited'">
+                  <label class="block text-sm font-medium text-gray-700 mb-1">超时分钟</label>
+                  <input v-model.number="autoConsumeForm.overtimeMinutes" type="number" min="0" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">大图数量</label>
+                  <input v-model.number="autoConsumeForm.largeImages" type="number" min="0" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">超量小图</label>
+                  <input v-model.number="autoConsumeForm.extraSmallImages" type="number" min="0" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">超量大图</label>
+                  <input v-model.number="autoConsumeForm.extraLargeImages" type="number" min="0" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">附加费用</label>
+                  <input v-model.number="autoConsumeForm.additionalFee" type="number" min="0" step="0.01" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">备注</label>
+                <textarea v-model="autoConsumeForm.notes" rows="2" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" placeholder="可选"></textarea>
+              </div>
+
+              <label class="inline-flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  v-model="autoConsumeForm.meituanCustomer"
+                  type="checkbox"
+                  class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                >
+                美团客户（基础费用抽成7%）
+              </label>
+
+              <div class="bg-green-50 border border-green-200 rounded-lg p-4 text-sm text-green-800 space-y-1">
+                <p>计费类型: {{ getBillingTypeLabel(autoConsumeForm.billingType) }}</p>
+                <p>基础费用: ￥{{ formatAmount(autoConsumePreview.baseFee) }}</p>
+                <p>超时费用: ￥{{ formatAmount(autoConsumePreview.overtimeFee) }}</p>
+                <p>耗材费用: ￥{{ formatAmount(autoConsumePreview.materialFee) }}</p>
+                <p>附加费用: ￥{{ formatAmount(autoConsumePreview.additionalFee) }}</p>
+                <p v-if="autoConsumeForm.meituanCustomer">美团抽成: -￥{{ formatAmount(autoMeituanDeduction) }}</p>
+                <p class="font-semibold text-base">
+                  结算金额: ￥{{ formatAmount(autoConsumeForm.meituanCustomer ? autoFinalAmount : autoConsumePreview.total) }}
+                </p>
+              </div>
+              <p v-if="autoConsumeErrors.total" class="text-red-500 text-xs mt-1">{{ autoConsumeErrors.total }}</p>
+            </div>
+
+            <div v-else class="space-y-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">选择客户</label>
+                <select v-model="timerConsumeForm.customerId" :class="['w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500', timerConsumeErrors.customerId ? 'border-red-500' : 'border-gray-300']">
+                  <option disabled value="">请选择客户</option>
+                  <option v-for="customer in validCustomers" :key="customer.id" :value="customer.id">{{ customer.name }} ({{ customer.phone }})</option>
+                </select>
+                <p v-if="timerConsumeErrors.customerId" class="text-red-500 text-xs mt-1">{{ timerConsumeErrors.customerId }}</p>
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">计时类型</label>
+                <select v-model="timerConsumeForm.timerType" :class="['w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500', timerConsumeErrors.timerType ? 'border-red-500' : 'border-gray-300']">
+                  <option v-for="item in timerTypeOptions" :key="item.value" :value="item.value">
+                    {{ item.label }}
+                  </option>
+                </select>
+                <p v-if="timerConsumeErrors.timerType" class="text-red-500 text-xs mt-1">{{ timerConsumeErrors.timerType }}</p>
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">套餐方案</label>
+                <select
+                  v-model="timerConsumeForm.packagePlan"
+                  :class="[
+                    'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500',
+                    timerConsumeErrors.packagePlan ? 'border-red-500' : 'border-gray-300'
+                  ]"
+                >
+                  <option v-for="item in timerPackagePlanOptions" :key="item.value" :value="item.value">
+                    {{ item.label }}
+                  </option>
+                </select>
+                <p v-if="timerConsumeErrors.packagePlan" class="text-red-500 text-xs mt-1">{{ timerConsumeErrors.packagePlan }}</p>
+              </div>
+
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">大图数量</label>
+                  <input v-model.number="timerConsumeForm.largeImages" type="number" min="0" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">超量小图</label>
+                  <input v-model.number="timerConsumeForm.extraSmallImages" type="number" min="0" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">超量大图</label>
+                  <input v-model.number="timerConsumeForm.extraLargeImages" type="number" min="0" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">备注</label>
+                <textarea v-model="timerConsumeForm.notes" rows="2" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" placeholder="开始计时前的备注"></textarea>
+              </div>
+
+              <div class="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800">
+                计时开始后，请前往“正在计时”页面完成结算。
+              </div>
+            </div>
+          </div>
+
+          <div class="px-6 py-4 border-t border-gray-200 flex justify-end space-x-3">
+            <button @click="showConsumeDialog = false" class="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors">取消</button>
+            <button
+              @click="submitConsumeByMode"
+              :disabled="loading"
+              class="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {{ consumeSubmitLabel }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
+
+

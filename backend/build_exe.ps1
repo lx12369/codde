@@ -19,6 +19,7 @@ Write-Host "3/3 打包 EXE..."
   --onefile `
   --name StudioSystem `
   desktop_main.py `
-  --add-data "..\frontend\dist;web_dist"
+  --add-data "..\frontend\dist;web_dist" `
+  --add-data ".\data;data"
 
 Write-Host "完成：backend\dist\StudioSystem.exe"

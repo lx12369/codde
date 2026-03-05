@@ -1,6 +1,6 @@
 from functools import wraps
 from flask import request, jsonify, g
-from .auth import decode_token
+from .auth import decode_token, is_token_revoked
 
 
 def token_required(f):
@@ -27,6 +27,13 @@ def token_required(f):
                 'message': '身份令牌无效或已过期',
                 'code': 401
             }), 401
+
+        if is_token_revoked(payload):
+            return jsonify({
+                'success': False,
+                'message': '身份令牌已失效，请重新登录',
+                'code': 401
+            }), 401
         
         user_id = payload.get('sub')
         if isinstance(user_id, str) and user_id.isdigit():
@@ -34,6 +41,7 @@ def token_required(f):
 
         g.current_user_id = user_id
         g.current_user = payload
+        g.current_token = token
         
         return f(*args, **kwargs)
     

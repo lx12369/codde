@@ -1,38 +1,64 @@
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import api from '@/api'
-
-const activeTab = ref('security')
-
-const passwordForm = reactive({
-  currentPassword: '',
-  newPassword: '',
-  confirmPassword: ''
-})
-
-const passwordErrors = reactive({
-  currentPassword: '',
-  newPassword: '',
-  confirmPassword: ''
-})
-
-const passwordLoading = ref(false)
-const passwordSuccess = ref('')
-const passwordError = ref('')
 
 const dataStatus = reactive({
   storageLocation: '',
   dataSize: '0 KB',
   customerCount: 0,
-  transactionCount: 0
+  transactionCount: 0,
+  beadMaterialCount: 0,
+  beadBalanceCount: 0,
+  beadLedgerCount: 0,
+  beadStocktakeCount: 0
 })
 
-const dataLoading = ref(false)
-const showClearConfirm = ref(false)
-const clearLoading = ref(false)
-
-const fileInput = ref(null)
+const statusLoading = ref(false)
+const backupLoading = ref(false)
 const restoreLoading = ref(false)
+const clearLoading = ref(false)
+const showClearConfirm = ref(false)
+const fileInput = ref(null)
+const lastSyncedAt = ref('')
+const clearConfirmButtonRef = ref(null)
+
+const feedback = reactive({
+  tone: 'info',
+  message: ''
+})
+
+let feedbackTimer = null
+
+const feedbackStyle = computed(() => {
+  if (feedback.tone === 'success') {
+    return 'border-emerald-200 bg-emerald-50 text-emerald-800'
+  }
+  if (feedback.tone === 'error') {
+    return 'border-rose-200 bg-rose-50 text-rose-800'
+  }
+  return 'border-blue-200 bg-blue-50 text-blue-800'
+})
+
+const isAnyActionRunning = computed(() => (
+  statusLoading.value || backupLoading.value || restoreLoading.value || clearLoading.value
+))
+
+const statusBadgeText = computed(() => {
+  if (statusLoading.value) return '同步中'
+  if (lastSyncedAt.value) return '已同步'
+  return '待同步'
+})
+
+const statusBadgeStyle = computed(() => (
+  statusLoading.value
+    ? 'border-amber-200 bg-amber-50 text-amber-700'
+    : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+))
+
+const safeCount = (value) => {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
 
 const formatFileSize = (bytes) => {
   const size = Number(bytes)
@@ -44,88 +70,81 @@ const formatFileSize = (bytes) => {
   return `${(size / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
-const validatePasswordForm = () => {
-  let isValid = true
-  passwordErrors.currentPassword = ''
-  passwordErrors.newPassword = ''
-  passwordErrors.confirmPassword = ''
-  passwordSuccess.value = ''
-  passwordError.value = ''
+const formatNumber = (num) => safeCount(num).toLocaleString()
 
-  if (!passwordForm.currentPassword) {
-    passwordErrors.currentPassword = '请输入当前密码'
-    isValid = false
-  }
-
-  if (!passwordForm.newPassword) {
-    passwordErrors.newPassword = '请输入新密码'
-    isValid = false
-  } else if (passwordForm.newPassword.length < 6) {
-    passwordErrors.newPassword = '密码至少需要6个字符'
-    isValid = false
-  }
-
-  if (!passwordForm.confirmPassword) {
-    passwordErrors.confirmPassword = '请确认新密码'
-    isValid = false
-  } else if (passwordForm.newPassword !== passwordForm.confirmPassword) {
-    passwordErrors.confirmPassword = '两次输入的密码不一致'
-    isValid = false
-  }
-
-  return isValid
+const formatDateTime = (date) => {
+  if (!(date instanceof Date)) return ''
+  return new Intl.DateTimeFormat('zh-CN', {
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  }).format(date)
 }
 
-const changePassword = async () => {
-  if (!validatePasswordForm()) return
-
-  passwordLoading.value = true
-  try {
-    await api.put('/auth/password', {
-      current_password: passwordForm.currentPassword,
-      new_password: passwordForm.newPassword
-    })
-    passwordSuccess.value = '密码修改成功'
-    passwordForm.currentPassword = ''
-    passwordForm.newPassword = ''
-    passwordForm.confirmPassword = ''
-  } catch (error) {
-    console.error('Failed to change password:', error)
-    passwordError.value = error.response?.data?.message || '密码修改失败'
-  } finally {
-    passwordLoading.value = false
-  }
+const clearFeedbackTimer = () => {
+  if (!feedbackTimer) return
+  window.clearTimeout(feedbackTimer)
+  feedbackTimer = null
 }
 
-const fetchDataStatus = async () => {
-  dataLoading.value = true
+const showFeedback = (tone, message) => {
+  feedback.tone = tone
+  feedback.message = message
+  clearFeedbackTimer()
+  feedbackTimer = window.setTimeout(() => {
+    feedback.message = ''
+    feedbackTimer = null
+  }, 4500)
+}
+
+const resetDataStatus = () => {
+  dataStatus.storageLocation = '本地数据库（路径未知）'
+  dataStatus.dataSize = '0 KB'
+  dataStatus.customerCount = 0
+  dataStatus.transactionCount = 0
+  dataStatus.beadMaterialCount = 0
+  dataStatus.beadBalanceCount = 0
+  dataStatus.beadLedgerCount = 0
+  dataStatus.beadStocktakeCount = 0
+}
+
+const fetchDataStatus = async ({ withFeedback = false } = {}) => {
+  statusLoading.value = true
   try {
-    const [statsResponse, backupResponse] = await Promise.all([
-      api.get('/dashboard/stats'),
-      api.get('/data/backup')
-    ])
+    const storageResponse = await api.get('/data/storage-info')
+    const storageInfo = storageResponse?.data || storageResponse || {}
+    const dataCounts = storageInfo.dataCounts || {}
 
-    const stats = statsResponse?.data || statsResponse || {}
-    const backupData = backupResponse?.data || backupResponse || {}
-    const backupText = JSON.stringify(backupData)
+    dataStatus.storageLocation = storageInfo.storageLocation || storageInfo.databaseUri || '本地数据库（路径未知）'
+    dataStatus.dataSize = formatFileSize(storageInfo.dataSizeBytes)
+    dataStatus.customerCount = safeCount(dataCounts.customers)
+    dataStatus.transactionCount = safeCount(dataCounts.transactions)
+    dataStatus.beadMaterialCount = safeCount(dataCounts.bead_materials)
+    dataStatus.beadBalanceCount = safeCount(dataCounts.bead_inventory_balances)
+    dataStatus.beadLedgerCount = safeCount(dataCounts.bead_inventory_ledgers)
+    dataStatus.beadStocktakeCount = safeCount(dataCounts.bead_stocktakes)
+    lastSyncedAt.value = formatDateTime(new Date())
 
-    dataStatus.storageLocation = '本地数据库'
-    dataStatus.dataSize = formatFileSize(new Blob([backupText]).size)
-    dataStatus.customerCount = Number(stats.total_customers ?? backupData?.customers?.length ?? 0)
-    dataStatus.transactionCount = Number(stats.total_transactions ?? backupData?.transactions?.length ?? 0)
+    if (withFeedback) {
+      showFeedback('success', '数据状态已刷新。')
+    }
   } catch (error) {
     console.error('Failed to fetch data status:', error)
-    dataStatus.storageLocation = '本地数据库'
-    dataStatus.dataSize = '0 KB'
-    dataStatus.customerCount = 0
-    dataStatus.transactionCount = 0
+    resetDataStatus()
+    if (withFeedback) {
+      showFeedback('error', '刷新失败，请检查网络连接后重试。')
+    }
   } finally {
-    dataLoading.value = false
+    statusLoading.value = false
   }
 }
 
 const backupData = async () => {
-  dataLoading.value = true
+  backupLoading.value = true
   try {
     const response = await api.get('/data/backup')
     const payload = response?.data || response || {}
@@ -133,18 +152,23 @@ const backupData = async () => {
     const blob = new Blob([content], { type: 'application/json;charset=utf-8' })
     const url = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
-    link.href = url
     const timestamp = new Date().toISOString().slice(0, 19).replace(/[:-]/g, '')
-    link.setAttribute('download', `backup_${timestamp}.json`)
+    const filename = `backup_${timestamp}.json`
+
+    link.href = url
+    link.setAttribute('download', filename)
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
     window.URL.revokeObjectURL(url)
+
+    showFeedback('success', `备份完成，已下载 ${filename}`)
+    await fetchDataStatus()
   } catch (error) {
     console.error('Failed to backup data:', error)
-    alert('备份失败，请重试。')
+    showFeedback('error', '备份失败，请稍后重试。')
   } finally {
-    dataLoading.value = false
+    backupLoading.value = false
   }
 }
 
@@ -156,22 +180,33 @@ const restoreData = async (event) => {
   const file = event.target.files?.[0]
   if (!file) return
 
-  if (!file.name.endsWith('.json')) {
-    alert('请选择JSON文件')
+  if (!file.name.toLowerCase().endsWith('.json')) {
+    showFeedback('error', '仅支持 .json 备份文件。')
+    if (fileInput.value) {
+      fileInput.value.value = ''
+    }
     return
   }
 
   restoreLoading.value = true
   try {
     const fileContent = await file.text()
-    const jsonData = JSON.parse(fileContent)
+    let jsonData = null
+
+    try {
+      jsonData = JSON.parse(fileContent)
+    } catch (parseError) {
+      showFeedback('error', '文件格式错误：无法解析为有效 JSON。')
+      return
+    }
 
     await api.post('/data/restore', jsonData)
-    alert('数据恢复成功')
-    fetchDataStatus()
+    showFeedback('success', `恢复完成：${file.name}`)
+    await fetchDataStatus()
   } catch (error) {
     console.error('Failed to restore data:', error)
-    alert('恢复失败，请检查文件格式。')
+    const apiMessage = error?.response?.data?.message
+    showFeedback('error', apiMessage || '恢复失败，请检查备份文件内容后重试。')
   } finally {
     restoreLoading.value = false
     if (fileInput.value) {
@@ -180,8 +215,15 @@ const restoreData = async (event) => {
   }
 }
 
-const confirmClearData = () => {
+const openClearConfirm = async () => {
   showClearConfirm.value = true
+  await nextTick()
+  clearConfirmButtonRef.value?.focus()
+}
+
+const closeClearConfirm = () => {
+  if (clearLoading.value) return
+  showClearConfirm.value = false
 }
 
 const clearAllData = async () => {
@@ -189,352 +231,367 @@ const clearAllData = async () => {
   try {
     await api.delete('/data/clear')
     showClearConfirm.value = false
-    fetchDataStatus()
-    alert('所有数据已清除')
+    showFeedback('success', '系统数据已清空。')
+    await fetchDataStatus()
   } catch (error) {
     console.error('Failed to clear data:', error)
-    alert('清除数据失败，请重试。')
+    const apiMessage = error?.response?.data?.message
+    showFeedback('error', apiMessage || '清空失败，请稍后重试。')
   } finally {
     clearLoading.value = false
   }
 }
 
-const formatNumber = (num) => {
-  if (num === null || num === undefined) return '0'
-  return num.toLocaleString()
-}
-
 onMounted(() => {
   fetchDataStatus()
+})
+
+onUnmounted(() => {
+  clearFeedbackTimer()
 })
 </script>
 
 <template>
-  <div class="space-y-6">
-    <div>
-      <h1 class="text-2xl font-bold text-gray-800">系统设置</h1>
-      <p class="text-gray-500 mt-1">配置系统参数和管理数据</p>
-    </div>
+  <div class="settings-page space-y-6">
+    <section class="page-hero rounded-3xl p-6 sm:p-8">
+      <div class="relative z-10 flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+        <div class="max-w-2xl space-y-3">
+          <p class="page-hero__eyebrow">Data Control Center</p>
+          <h1 class="page-hero__title">数据管理</h1>
+        </div>
 
-    <div class="bg-white rounded-lg shadow-sm">
-      <div class="border-b border-gray-200">
-        <nav class="flex -mb-px">
-          <button
-            @click="activeTab = 'security'"
+        <button
+          type="button"
+          :disabled="isAnyActionRunning"
+          @click="fetchDataStatus({ withFeedback: true })"
+          class="page-hero__action"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            class="h-4 w-4"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+            />
+          </svg>
+          <span>{{ statusLoading ? '刷新中...' : '刷新状态' }}</span>
+        </button>
+      </div>
+    </section>
+
+    <Transition name="notice">
+      <div
+        v-if="feedback.message"
+        role="status"
+        aria-live="polite"
+        :class="['rounded-2xl border px-4 py-3 sm:px-5 sm:py-4 text-sm sm:text-[0.95rem] shadow-sm', feedbackStyle]"
+      >
+        {{ feedback.message }}
+      </div>
+    </Transition>
+
+    <section class="panel-surface rounded-3xl border border-slate-200/80 p-5 sm:p-6 lg:p-8 space-y-8 shadow-sm">
+      <div class="rounded-2xl border border-sky-100 bg-gradient-to-b from-white via-white to-sky-50/80 p-5 sm:p-6">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 class="text-lg sm:text-xl font-bold text-slate-900">状态总览</h2>
+            <p class="mt-1 text-sm text-slate-500">
+              最近刷新：{{ lastSyncedAt || '尚未刷新' }}
+            </p>
+          </div>
+          <span
             :class="[
-              'px-6 py-4 text-sm font-medium border-b-2 transition-colors',
-              activeTab === 'security'
-                ? 'border-[#1e40af] text-[#1e40af]'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              'inline-flex items-center rounded-full border px-3 py-1 text-xs sm:text-sm font-semibold',
+              statusBadgeStyle
             ]"
           >
-            <div class="flex items-center gap-2">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-              </svg>
-              安全设置
-            </div>
-          </button>
+            {{ statusBadgeText }}
+          </span>
+        </div>
+
+        <div class="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <article class="status-card">
+            <p class="status-card__label">存储位置</p>
+            <p class="status-card__value break-all">{{ dataStatus.storageLocation }}</p>
+          </article>
+          <article class="status-card" style="animation-delay: 0.04s">
+            <p class="status-card__label">数据大小</p>
+            <p class="status-card__value">{{ dataStatus.dataSize }}</p>
+          </article>
+          <article class="status-card" style="animation-delay: 0.08s">
+            <p class="status-card__label">客户总数</p>
+            <p class="status-card__value">{{ formatNumber(dataStatus.customerCount) }}</p>
+          </article>
+          <article class="status-card" style="animation-delay: 0.12s">
+            <p class="status-card__label">交易记录</p>
+            <p class="status-card__value">{{ formatNumber(dataStatus.transactionCount) }}</p>
+          </article>
+          <article class="status-card" style="animation-delay: 0.16s">
+            <p class="status-card__label">豆料档案</p>
+            <p class="status-card__value">{{ formatNumber(dataStatus.beadMaterialCount) }}</p>
+          </article>
+          <article class="status-card" style="animation-delay: 0.2s">
+            <p class="status-card__label">豆仓库存记录</p>
+            <p class="status-card__value">{{ formatNumber(dataStatus.beadBalanceCount) }}</p>
+          </article>
+          <article class="status-card" style="animation-delay: 0.24s">
+            <p class="status-card__label">豆仓流水</p>
+            <p class="status-card__value">{{ formatNumber(dataStatus.beadLedgerCount) }}</p>
+          </article>
+          <article class="status-card" style="animation-delay: 0.28s">
+            <p class="status-card__label">豆仓盘点记录</p>
+            <p class="status-card__value">{{ formatNumber(dataStatus.beadStocktakeCount) }}</p>
+          </article>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 gap-5 xl:grid-cols-2">
+        <article class="action-card action-card--backup">
+          <div>
+            <h3 class="action-card__title">数据备份</h3>
+            <p class="action-card__desc">导出当前系统快照，生成本地 JSON 备份文件。</p>
+          </div>
           <button
-            @click="activeTab = 'data'"
-            :class="[
-              'px-6 py-4 text-sm font-medium border-b-2 transition-colors',
-              activeTab === 'data'
-                ? 'border-[#1e40af] text-[#1e40af]'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            ]"
+            type="button"
+            :disabled="isAnyActionRunning"
+            @click="backupData"
+            class="action-btn action-btn--backup"
           >
-            <div class="flex items-center gap-2">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
-              </svg>
-              数据管理
-            </div>
+            {{ backupLoading ? '备份中...' : '立即备份到文件' }}
           </button>
-        </nav>
+        </article>
+
+        <article class="action-card action-card--restore">
+          <div>
+            <h3 class="action-card__title">数据恢复</h3>
+            <p class="action-card__desc">上传 `.json` 备份文件，将系统恢复到指定快照。</p>
+          </div>
+          <input
+            ref="fileInput"
+            type="file"
+            accept=".json"
+            class="hidden"
+            @change="restoreData"
+          >
+          <button
+            type="button"
+            :disabled="isAnyActionRunning"
+            @click="triggerRestore"
+            class="action-btn action-btn--restore"
+          >
+            {{ restoreLoading ? '恢复中...' : '上传 JSON 并恢复' }}
+          </button>
+        </article>
       </div>
 
-      <div class="p-6">
-        <div v-if="activeTab === 'security'" class="max-w-md">
-          <h2 class="text-lg font-medium text-gray-900 mb-6">修改密码</h2>
-
-          <div v-if="passwordSuccess" class="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg">
-            <div class="flex items-center gap-2">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-              </svg>
-              <span class="text-green-800">{{ passwordSuccess }}</span>
-            </div>
-          </div>
-
-          <div v-if="passwordError" class="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
-            <div class="flex items-center gap-2">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              <span class="text-red-800">{{ passwordError }}</span>
-            </div>
-          </div>
-
-          <form @submit.prevent="changePassword" class="space-y-4">
-            <div>
-              <label for="currentPassword" class="block text-sm font-medium text-gray-700 mb-1">当前密码</label>
-              <input
-                id="currentPassword"
-                v-model="passwordForm.currentPassword"
-                type="password"
-                :class="[
-                  'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1e40af] focus:border-transparent',
-                  passwordErrors.currentPassword ? 'border-red-500' : 'border-gray-300'
-                ]"
-                placeholder="请输入当前密码"
-              />
-              <p v-if="passwordErrors.currentPassword" class="text-red-500 text-xs mt-1">{{ passwordErrors.currentPassword }}</p>
-            </div>
-
-            <div>
-              <label for="newPassword" class="block text-sm font-medium text-gray-700 mb-1">新密码</label>
-              <input
-                id="newPassword"
-                v-model="passwordForm.newPassword"
-                type="password"
-                :class="[
-                  'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1e40af] focus:border-transparent',
-                  passwordErrors.newPassword ? 'border-red-500' : 'border-gray-300'
-                ]"
-                placeholder="请输入新密码"
-              />
-              <p v-if="passwordErrors.newPassword" class="text-red-500 text-xs mt-1">{{ passwordErrors.newPassword }}</p>
-            </div>
-
-            <div>
-              <label for="confirmPassword" class="block text-sm font-medium text-gray-700 mb-1">确认新密码</label>
-              <input
-                id="confirmPassword"
-                v-model="passwordForm.confirmPassword"
-                type="password"
-                :class="[
-                  'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1e40af] focus:border-transparent',
-                  passwordErrors.confirmPassword ? 'border-red-500' : 'border-gray-300'
-                ]"
-                placeholder="请确认新密码"
-              />
-              <p v-if="passwordErrors.confirmPassword" class="text-red-500 text-xs mt-1">{{ passwordErrors.confirmPassword }}</p>
-            </div>
-
-            <button
-              type="submit"
-              :disabled="passwordLoading"
-              class="w-full px-4 py-2 bg-[#1e40af] text-white rounded-lg hover:bg-[#1e3a8a] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <span v-if="passwordLoading" class="flex items-center justify-center">
-                <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                处理中...
-              </span>
-              <span v-else>修改密码</span>
-            </button>
-          </form>
+      <section class="danger-zone rounded-2xl border border-rose-200 bg-gradient-to-b from-rose-50 to-white p-5 sm:p-6">
+        <div class="space-y-2">
+          <h3 class="text-lg font-bold text-rose-900">危险操作区</h3>
+          <p class="text-sm text-rose-700/90 leading-relaxed">
+            清空后将删除客户、交易、活动、豆仓与日志等数据。此操作不可撤销，请确认已完成备份。
+          </p>
         </div>
+        <button
+          type="button"
+          :disabled="isAnyActionRunning"
+          @click="openClearConfirm"
+          class="mt-5 inline-flex w-full items-center justify-center rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:bg-rose-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-600 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+        >
+          {{ clearLoading ? '清空中...' : '清空所有数据' }}
+        </button>
+      </section>
+    </section>
 
-        <div v-if="activeTab === 'data'" class="space-y-6">
-          <div class="bg-gray-50 rounded-lg p-6">
-            <h3 class="text-lg font-medium text-gray-900 mb-4">数据存储状态</h3>
-            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div class="bg-white rounded-lg p-4 shadow-sm">
-                <div class="flex items-center gap-3">
-                  <div class="p-2 bg-blue-100 rounded-lg">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <p class="text-xs text-gray-500">存储位置</p>
-                    <p class="text-sm font-medium text-gray-900">{{ dataStatus.storageLocation }}</p>
-                  </div>
-                </div>
-              </div>
-
-              <div class="bg-white rounded-lg p-4 shadow-sm">
-                <div class="flex items-center gap-3">
-                  <div class="p-2 bg-green-100 rounded-lg">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <p class="text-xs text-gray-500">数据大小</p>
-                    <p class="text-sm font-medium text-gray-900">{{ dataStatus.dataSize }}</p>
-                  </div>
-                </div>
-              </div>
-
-              <div class="bg-white rounded-lg p-4 shadow-sm">
-                <div class="flex items-center gap-3">
-                  <div class="p-2 bg-purple-100 rounded-lg">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-purple-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <p class="text-xs text-gray-500">客户数量</p>
-                    <p class="text-sm font-medium text-gray-900">{{ formatNumber(dataStatus.customerCount) }}</p>
-                  </div>
-                </div>
-              </div>
-
-              <div class="bg-white rounded-lg p-4 shadow-sm">
-                <div class="flex items-center gap-3">
-                  <div class="p-2 bg-orange-100 rounded-lg">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-orange-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
-                    </svg>
-                  </div>
-                  <div>
-                    <p class="text-xs text-gray-500">交易记录</p>
-                    <p class="text-sm font-medium text-gray-900">{{ formatNumber(dataStatus.transactionCount) }}</p>
-                  </div>
-                </div>
-              </div>
+    <Teleport to="body">
+      <Transition name="modal-fade">
+        <div
+          v-if="showClearConfirm"
+          class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-[1px]"
+          @click.self="closeClearConfirm"
+        >
+          <div
+            class="w-full max-w-lg rounded-2xl bg-white shadow-2xl ring-1 ring-black/5"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="clear-data-title"
+          >
+            <div class="border-b border-slate-100 px-6 py-5">
+              <h3 id="clear-data-title" class="text-lg font-bold text-slate-900">确认清空所有数据？</h3>
+              <p class="mt-2 text-sm text-slate-600 leading-relaxed">
+                该操作会永久删除业务与豆仓数据，且无法撤销。建议先执行“数据备份”，再继续。
+              </p>
             </div>
-          </div>
 
-          <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div class="bg-white border border-gray-200 rounded-lg p-6">
-              <div class="flex items-center gap-3 mb-4">
-                <div class="p-2 bg-green-100 rounded-lg">
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-                  </svg>
-                </div>
-                <h3 class="text-lg font-medium text-gray-900">数据备份</h3>
-              </div>
-              <p class="text-sm text-gray-500 mb-4">将所有系统数据导出为JSON文件进行备份。</p>
+            <div class="flex flex-col gap-3 px-6 py-5 sm:flex-row sm:justify-end">
               <button
-                @click="backupData"
-                :disabled="dataLoading"
-                class="w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                type="button"
+                :disabled="clearLoading"
+                @click="closeClearConfirm"
+                class="inline-flex items-center justify-center rounded-xl border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                <span v-if="dataLoading" class="flex items-center justify-center">
-                  <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                  备份中...
-                </span>
-                <span v-else>备份数据到文件</span>
+                取消
               </button>
-            </div>
-
-            <div class="bg-white border border-gray-200 rounded-lg p-6">
-              <div class="flex items-center gap-3 mb-4">
-                <div class="p-2 bg-blue-100 rounded-lg">
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                  </svg>
-                </div>
-                <h3 class="text-lg font-medium text-gray-900">数据恢复</h3>
-              </div>
-              <p class="text-sm text-gray-500 mb-4">上传JSON备份文件恢复系统数据。</p>
-              <input
-                ref="fileInput"
-                type="file"
-                accept=".json"
-                class="hidden"
-                @change="restoreData"
-              />
               <button
-                @click="triggerRestore"
-                :disabled="restoreLoading"
-                class="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                ref="clearConfirmButtonRef"
+                type="button"
+                :disabled="clearLoading"
+                @click="clearAllData"
+                class="inline-flex items-center justify-center rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white transition-all hover:bg-rose-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-600 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                <span v-if="restoreLoading" class="flex items-center justify-center">
-                  <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                  恢复中...
-                </span>
-                <span v-else>上传 JSON 文件恢复数据</span>
-              </button>
-            </div>
-
-            <div class="bg-white border border-red-200 rounded-lg p-6">
-              <div class="flex items-center gap-3 mb-4">
-                <div class="p-2 bg-red-100 rounded-lg">
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                  </svg>
-                </div>
-                <h3 class="text-lg font-medium text-gray-900">数据清除</h3>
-              </div>
-              <p class="text-sm text-gray-500 mb-4">永久删除所有数据，此操作无法撤销。</p>
-              <button
-                @click="confirmClearData"
-                class="w-full px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
-              >
-                清除所有数据
+                {{ clearLoading ? '正在清空...' : '确认清空' }}
               </button>
             </div>
           </div>
         </div>
-      </div>
-    </div>
-
-    <div v-if="showClearConfirm" class="fixed inset-0 z-50 overflow-y-auto">
-      <div class="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:block sm:p-0">
-        <div class="fixed inset-0 transition-opacity" @click="showClearConfirm = false">
-          <div class="absolute inset-0 bg-gray-500 opacity-75"></div>
-        </div>
-        <span class="hidden sm:inline-block sm:align-middle sm:h-screen">&#8203;</span>
-        <div class="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
-          <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
-            <div class="sm:flex sm:items-start">
-              <div class="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-red-100 sm:mx-0 sm:h-10 sm:w-10">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                </svg>
-              </div>
-              <div class="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left">
-                <h3 class="text-lg leading-6 font-medium text-gray-900">确认清除所有数据</h3>
-                <div class="mt-2">
-                  <p class="text-sm text-gray-500">
-                    这将永久删除所有客户、交易和其他数据。此操作无法撤销。确定要继续吗？
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse gap-2">
-            <button
-              @click="clearAllData"
-              :disabled="clearLoading"
-              class="w-full inline-flex justify-center rounded-lg border border-transparent shadow-sm px-4 py-2 bg-red-600 text-base font-medium text-white hover:bg-red-700 focus:outline-none sm:w-auto sm:text-sm transition-colors"
-            >
-              <span v-if="clearLoading" class="flex items-center">
-                <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                清除中...
-              </span>
-              <span v-else>确认清除</span>
-            </button>
-            <button
-              @click="showClearConfirm = false"
-              type="button"
-              class="mt-3 w-full inline-flex justify-center rounded-lg border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none sm:mt-0 sm:w-auto sm:text-sm transition-colors"
-            >
-              取消
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
 <style scoped>
+.panel-surface {
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+}
+
+.status-card {
+  border: 1px solid #dbe7f5;
+  border-radius: 1rem;
+  background: #ffffff;
+  padding: 1rem;
+  min-height: 128px;
+  box-shadow: 0 10px 20px -18px rgba(6, 37, 82, 0.65);
+  transition: transform 220ms ease, box-shadow 220ms ease, border-color 220ms ease;
+  animation: card-in 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.status-card:hover {
+  transform: translateY(-2px);
+  border-color: #b7d7f5;
+  box-shadow: 0 16px 30px -20px rgba(15, 76, 129, 0.55);
+}
+
+.status-card__label {
+  color: #475569;
+  font-size: 0.82rem;
+  letter-spacing: 0.02em;
+}
+
+.status-card__value {
+  margin-top: 0.45rem;
+  color: #0f172a;
+  font-size: 1.05rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.action-card {
+  border-radius: 1rem;
+  padding: 1.4rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  border: 1px solid;
+  box-shadow: 0 8px 20px -16px rgba(15, 23, 42, 0.55);
+}
+
+.action-card--backup {
+  background: linear-gradient(180deg, #f0fdf4 0%, #ffffff 88%);
+  border-color: #b7e4c7;
+}
+
+.action-card--restore {
+  background: linear-gradient(180deg, #eff6ff 0%, #ffffff 88%);
+  border-color: #bfdbfe;
+}
+
+.action-card__title {
+  color: #0f172a;
+  font-size: 1.08rem;
+  font-weight: 800;
+}
+
+.action-card__desc {
+  margin-top: 0.25rem;
+  color: #475569;
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+
+.action-btn {
+  margin-top: auto;
+  border-radius: 0.8rem;
+  padding: 0.65rem 0.9rem;
+  color: #ffffff;
+  font-size: 0.9rem;
+  font-weight: 700;
+  transition: transform 180ms ease, filter 180ms ease, opacity 180ms ease;
+}
+
+.action-btn:hover:enabled {
+  transform: translateY(-1px);
+  filter: brightness(1.03);
+}
+
+.action-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.action-btn--backup {
+  background: linear-gradient(135deg, #177c44, #14833f);
+}
+
+.action-btn--restore {
+  background: linear-gradient(135deg, #1d4ed8, #2563eb);
+}
+
+.danger-zone {
+  box-shadow: inset 0 0 0 1px rgba(251, 113, 133, 0.14);
+}
+
+.notice-enter-active,
+.notice-leave-active {
+  transition: all 180ms ease;
+}
+
+.notice-enter-from,
+.notice-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+
+.modal-fade-enter-active,
+.modal-fade-leave-active {
+  transition: opacity 220ms ease;
+}
+
+.modal-fade-enter-from,
+.modal-fade-leave-to {
+  opacity: 0;
+}
+
+@keyframes card-in {
+  from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 420px) {
+  .status-card {
+    min-height: 110px;
+  }
+}
 </style>
+
+

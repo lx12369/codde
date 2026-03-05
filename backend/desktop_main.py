@@ -2,6 +2,7 @@ import os
 import sys
 import threading
 import webbrowser
+import socket
 from pathlib import Path
 
 from flask import jsonify, send_from_directory
@@ -23,6 +24,38 @@ def _configure_runtime_env() -> Path:
     if "DATABASE_URL" not in os.environ:
         os.environ["DATABASE_URL"] = os_db_uri
     return data_dir
+
+
+def _get_bind_host() -> str:
+    host = str(os.environ.get("STUDIO_HOST", "0.0.0.0")).strip()
+    return host or "0.0.0.0"
+
+
+def _get_bind_port() -> int:
+    raw_port = os.environ.get("STUDIO_PORT", "5000")
+    try:
+        port = int(raw_port)
+    except (TypeError, ValueError):
+        return 5000
+
+    if port < 1 or port > 65535:
+        return 5000
+    return port
+
+
+def _get_local_ip() -> str:
+    # Derive LAN IP without external dependency; fallback to localhost.
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("10.255.255.255", 1))
+        ip = sock.getsockname()[0]
+        if ip:
+            return ip
+    except OSError:
+        pass
+    finally:
+        sock.close()
+    return "127.0.0.1"
 
 
 def _attach_spa_routes(app, dist_dir: Path) -> None:
@@ -50,9 +83,18 @@ def main():
     dist_dir = _resolve_frontend_dist()
     _attach_spa_routes(app, dist_dir)
 
-    url = "http://127.0.0.1:5000"
-    threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+    host = _get_bind_host()
+    port = _get_bind_port()
+    local_url = f"http://127.0.0.1:{port}"
+    lan_ip = _get_local_ip()
+    lan_url = f"http://{lan_ip}:{port}"
+
+    print(f"StudioSystem running at: {local_url}")
+    if host == "0.0.0.0":
+        print(f"LAN access URL: {lan_url}")
+
+    threading.Timer(1.0, lambda: webbrowser.open(local_url)).start()
+    app.run(host=host, port=port, debug=False, use_reloader=False)
 
 
 if __name__ == "__main__":

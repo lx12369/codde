@@ -33,21 +33,27 @@ def create_app(config_name='default'):
 def register_routes(app):
     from routes.auth import auth_bp
     from routes.customers import customers_bp
+    from routes.employees import employees_bp
     from routes.transactions import transactions_bp
     from routes.activities import activities_bp
     from routes.billing import billing_bp
     from routes.active_timers import active_timers_bp
     from routes.dashboard import dashboard_bp
     from routes.data import data_bp
+    from routes.logs import logs_bp
+    from routes.bead_inventory import bead_inventory_bp
     
     app.register_blueprint(auth_bp)
     app.register_blueprint(customers_bp, url_prefix='/api/customers')
+    app.register_blueprint(employees_bp, url_prefix='/api/employees')
     app.register_blueprint(transactions_bp, url_prefix='/api/transactions')
     app.register_blueprint(activities_bp, url_prefix='/api/activities')
     app.register_blueprint(billing_bp, url_prefix='/api')
     app.register_blueprint(active_timers_bp, url_prefix='/api/active-timers')
     app.register_blueprint(dashboard_bp, url_prefix='/api/dashboard')
     app.register_blueprint(data_bp, url_prefix='/api/data')
+    app.register_blueprint(logs_bp, url_prefix='/api/logs')
+    app.register_blueprint(bead_inventory_bp, url_prefix='/api/bead-inventory')
 
 
 def register_error_handlers(app):
