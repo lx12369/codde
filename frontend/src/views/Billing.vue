@@ -214,7 +214,7 @@ const overtimeRuleSummary = computed(() => {
 
 function formatCurrency(value) {
   const amount = Math.max(0, toNumber(value, 0))
-  return `¥${amount.toFixed(2)}`
+  return `￥${amount.toFixed(2)}`
 }
 
 const daySectionMeta = Object.freeze({

@@ -266,7 +266,7 @@ function toNumber(value) {
 
 function formatAmount(amount) {
   const normalized = toNumber(amount)
-  return `¥${normalized.toLocaleString('zh-CN', {
+  return `￥${normalized.toLocaleString('zh-CN', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
   })}`

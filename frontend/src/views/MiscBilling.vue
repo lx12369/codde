@@ -106,7 +106,7 @@ const filteredItems = computed(() => {
 })
 
 function formatYuan(value) {
-  return `¥${(Number(value) || 0).toFixed(2)}`
+  return `￥${(Number(value) || 0).toFixed(2)}`
 }
 
 function formatStock(value) {

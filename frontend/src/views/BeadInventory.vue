@@ -250,12 +250,12 @@ function formatGrams(value) {
 
 function formatPricePer500g(value) {
   const num = Number(value || 0)
-  return `¥${num.toFixed(2)} / 500g`
+  return `￥${num.toFixed(2)} / 500g`
 }
 
 function formatMoney(value) {
   const num = Number(value || 0)
-  return `¥${num.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  return `￥${num.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 function formatDateTime(value) {
@@ -934,7 +934,7 @@ async function submitMarketPrice() {
     const changed = result?.data?.changed ?? 0
     showMarketPriceModal.value = false
     await refreshAll()
-    showFeedback('success', `市场价已批量更新（¥${amount.toFixed(2)} / ${grams}g），更新 ${changed} 条。`)
+    showFeedback('success', `市场价已批量更新（￥${amount.toFixed(2)} / ${grams}g），更新 ${changed} 条。`)
   } catch (error) {
     requestError.value = getErrorMessage(error, '设置全部市场价失败')
     showFeedback('error', requestError.value)
@@ -1691,7 +1691,7 @@ onUnmounted(() => {
               >
             </label>
             <p class="text-xs text-slate-500">
-              参考换算：当前等于 ¥{{ ((Number(marketPriceForm.amount || 0) / Number(marketPriceForm.grams || 1)) * 500).toFixed(2) }} / 500g
+              参考换算：当前等于 ￥{{ ((Number(marketPriceForm.amount || 0) / Number(marketPriceForm.grams || 1)) * 500).toFixed(2) }} / 500g
             </p>
           </div>
           <div class="inventory-modal__footer flex justify-end gap-2 border-t border-slate-200 px-6 py-4">

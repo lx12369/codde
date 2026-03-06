@@ -2031,7 +2031,7 @@ onUnmounted(() => {
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <div v-for="item in enabledMiscItems" :key="`manual-misc-${item.id}`">
                     <label class="block text-sm font-medium text-gray-700 mb-1">
-                      {{ item.name }}（¥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
+                      {{ item.name }}（￥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
                     </label>
                     <p class="text-xs text-slate-500 mb-1">可用库存：{{ formatMiscStock(item) }}</p>
                     <input
@@ -2160,7 +2160,7 @@ onUnmounted(() => {
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <div v-for="item in enabledMiscItems" :key="item.id">
                     <label class="block text-sm font-medium text-gray-700 mb-1">
-                      {{ item.name }}（¥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
+                      {{ item.name }}（￥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
                     </label>
                     <p class="text-xs text-slate-500 mb-1">可用库存：{{ formatMiscStock(item) }}</p>
                     <input
@@ -2272,7 +2272,7 @@ onUnmounted(() => {
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <div v-for="item in enabledMiscItems" :key="`timer-misc-${item.id}`">
                     <label class="block text-sm font-medium text-gray-700 mb-1">
-                      {{ item.name }}（¥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
+                      {{ item.name }}（￥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
                     </label>
                     <p class="text-xs text-slate-500 mb-1">可用库存：{{ formatMiscStock(item) }}</p>
                     <input

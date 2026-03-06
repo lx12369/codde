@@ -974,39 +974,6 @@ function speakWarningText(text) {
   }
 }
 
-function testSpeakerBroadcast() {
-  if (typeof window === 'undefined') {
-    showFeedback('error', '当前环境不支持语音播报。')
-    return
-  }
-
-  const synth = window.speechSynthesis
-  if (!synth || typeof window.SpeechSynthesisUtterance !== 'function') {
-    showFeedback('error', '浏览器不支持语音播报，请更换浏览器后重试。')
-    return
-  }
-
-  try {
-    synth.cancel()
-    const utterance = buildSpeechUtterance('语音测试，a1、a2剩余十分钟。请检查扬声器是否有声音。')
-    if (!utterance) {
-      showFeedback('error', '当前浏览器语音能力不可用。')
-      return
-    }
-    utterance.onerror = () => {
-      showFeedback('error', '测试播报失败，请检查浏览器语音权限与系统输出设备。')
-    }
-    playLeadTone()
-    window.setTimeout(() => {
-      synth.speak(utterance)
-    }, 620)
-    showFeedback('info', '已触发测试播报，请检查扬声器输出。')
-  } catch (error) {
-    console.error('测试播报失败:', error)
-    showFeedback('error', '测试播报失败，请检查浏览器语音能力。')
-  }
-}
-
 function showNextWarning() {
   if (activeWarning.value || warningQueue.value.length === 0) return
   const nextWarning = warningQueue.value.shift()
@@ -2405,12 +2372,6 @@ onUnmounted(() => {
         </div>
         <div class="flex items-center gap-2">
           <button
-            @click="testSpeakerBroadcast"
-            class="inline-flex items-center gap-2 rounded-xl border border-white/55 bg-white/15 px-4 py-2 text-sm font-semibold text-white hover:bg-white/25"
-          >
-            测试播报
-          </button>
-          <button
             @click="openAddModal"
             class="page-hero__action"
           >
@@ -3771,7 +3732,7 @@ onUnmounted(() => {
               <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div v-for="item in enabledMiscItems" :key="`edit-misc-${item.id}`">
                   <label class="block text-sm font-medium text-gray-700 mb-1">
-                    {{ item.name }}（¥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
+                    {{ item.name }}（￥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
                   </label>
                   <p class="text-xs text-slate-500 mb-1">可用库存：{{ formatMiscStock(item) }}</p>
                   <input
@@ -3911,7 +3872,7 @@ onUnmounted(() => {
               <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div v-for="item in enabledMiscItems" :key="item.id">
                   <label class="block text-sm font-medium text-gray-700 mb-1">
-                    {{ item.name }}（¥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
+                    {{ item.name }}（￥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
                   </label>
                   <p class="text-xs text-slate-500 mb-1">可用库存：{{ formatMiscStock(item) }}</p>
                   <input
