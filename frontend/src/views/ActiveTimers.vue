@@ -847,6 +847,15 @@ function isTableNoOccupied(tableNo, excludeTimerId = '') {
   ))
 }
 
+function findActiveTimerByTableNo(tableNo) {
+  const normalized = normalizeTableNo(tableNo)
+  if (!normalized) return null
+  return timers.value.find((timer) => (
+    timer.status !== 'completed'
+    && getTimerOccupiedTableNos(timer).includes(normalized)
+  )) || null
+}
+
 function loadWarnedTimerIds() {
   if (typeof window === 'undefined') return new Set()
   try {
@@ -1721,8 +1730,18 @@ function resolveMultiPersonPackagePresetByPeopleCount(peopleCount) {
 async function handleSeatLeftClick(tableArea, seatNo, occupied = false) {
   const area = String(tableArea || '').trim().toUpperCase()
   const seat = String(seatNo || '').trim()
+  const tableNo = buildTableNo(area, seat)
 
   if (seatSelectionMode.value !== 'multi') {
+    if (occupied) {
+      const timer = findActiveTimerByTableNo(tableNo)
+      if (!timer) {
+        showFeedback('error', `未找到该座位对应计时单：${area}${seat}`)
+        return
+      }
+      openSettleModal(timer)
+      return
+    }
     await openAddModalForSeat(area, seat, occupied)
     return
   }
