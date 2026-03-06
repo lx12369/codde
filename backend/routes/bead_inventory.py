@@ -1,5 +1,6 @@
 from datetime import datetime
 import json
+import math
 from pathlib import Path
 
 from flask import Blueprint, request
@@ -31,6 +32,11 @@ from utils.response import success_response, error_response, paginated_response
 
 bead_inventory_bp = Blueprint('bead_inventory', __name__)
 BEAD_PURCHASE_CUSTOMER_ID = 'C000'
+RESTOCK_URGENCY_ORDER = {
+    'critical': 0,
+    'high': 1,
+    'medium': 2
+}
 
 
 def _to_int(value, default):
@@ -122,6 +128,69 @@ def _material_payload(item, include_stats=False):
     return payload
 
 
+def _build_restock_suggestion(material):
+    payload = _material_payload(material, include_stats=True)
+    current_grams = float(payload.get('current_grams') or 0.0)
+    safe_stock = float(material.safe_stock or 0.0)
+
+    if safe_stock <= 0 or current_grams >= safe_stock:
+        return None
+
+    avg_daily_outbound = float(payload.get('avg_daily_outbound_grams_7d') or 0.0)
+    shortage_grams = round(max(0.0, safe_stock - current_grams), 3)
+
+    # 补货目标同时覆盖“安全库存基线”与“未来两周预计消耗”。
+    target_by_policy = safe_stock * 2
+    target_by_demand = safe_stock + (avg_daily_outbound * 14)
+    target_grams = round(max(safe_stock, target_by_policy, target_by_demand), 3)
+    suggested_restock_grams = round(max(0.0, target_grams - current_grams), 3)
+
+    if suggested_restock_grams <= 0:
+        return None
+
+    days_left = payload.get('estimated_days_left')
+    has_days_left = isinstance(days_left, (int, float))
+    if current_grams <= 0 or (has_days_left and days_left <= 1):
+        urgency = 'critical'
+    elif (has_days_left and days_left <= 3) or shortage_grams >= safe_stock * 0.6:
+        urgency = 'high'
+    else:
+        urgency = 'medium'
+
+    market_price_per_500g = float(material.market_price_per_500g or 0.0)
+    estimated_restock_cost = round((suggested_restock_grams * market_price_per_500g) / 500, 2)
+
+    grams_per_bag = parse_positive_number(material.grams_per_bag)
+    grams_per_bottle = parse_positive_number(material.grams_per_bottle)
+
+    recommended_bags = int(math.ceil(suggested_restock_grams / grams_per_bag)) if grams_per_bag else None
+    recommended_bottles = int(math.ceil(suggested_restock_grams / grams_per_bottle)) if grams_per_bottle else None
+    expected_days_after_restock = (
+        round(target_grams / avg_daily_outbound, 2)
+        if avg_daily_outbound > 0
+        else None
+    )
+
+    return {
+        'id': material.id,
+        'name': material.name,
+        'color_code': material.color_code,
+        'current_grams': current_grams,
+        'safe_stock': safe_stock,
+        'shortage_grams': shortage_grams,
+        'target_grams': target_grams,
+        'suggested_restock_grams': suggested_restock_grams,
+        'avg_daily_outbound_grams_7d': avg_daily_outbound,
+        'estimated_days_left': days_left if has_days_left else None,
+        'expected_days_after_restock': expected_days_after_restock,
+        'market_price_per_500g': market_price_per_500g,
+        'estimated_restock_cost': estimated_restock_cost,
+        'recommended_bags': recommended_bags,
+        'recommended_bottles': recommended_bottles,
+        'urgency': urgency
+    }
+
+
 def _generate_transaction_id():
     last_transaction = Transaction.query.order_by(Transaction.id.desc()).first()
     if last_transaction:
@@ -138,7 +207,7 @@ def _get_or_create_bead_purchase_customer():
     if not customer:
         customer = Customer(
             id=BEAD_PURCHASE_CUSTOMER_ID,
-            name='豆仓采购',
+            name='豆仓损耗',
             is_deleted=True
         )
         db.session.add(customer)
@@ -411,24 +480,17 @@ def batch_update_safe_stock_by_common_color():
 @token_required
 def get_materials():
     page, page_size = _page_params()
-    search = str(request.args.get('search', '') or '').strip()
+    # 筛选仅按名称生效：优先读取 name，兼容旧 search 参数
+    name = str(request.args.get('name', request.args.get('search', '')) or '').strip()
     status = str(request.args.get('status', 'all') or 'all').strip().lower()
 
     query = BeadMaterial.query
     if status in {'active', 'inactive'}:
         query = query.filter(BeadMaterial.status == status)
 
-    if search:
-        pattern = f'%{search}%'
-        query = query.filter(
-            db.or_(
-                BeadMaterial.id.ilike(pattern),
-                BeadMaterial.name.ilike(pattern),
-                BeadMaterial.color_code.ilike(pattern),
-                BeadMaterial.spec.ilike(pattern),
-                BeadMaterial.brand.ilike(pattern)
-            )
-        )
+    if name:
+        pattern = f'%{name}%'
+        query = query.filter(BeadMaterial.name.ilike(pattern))
 
     total = query.count()
     items = (
@@ -843,3 +905,45 @@ def get_alerts():
             'total_alerts': len(items)
         }
     })
+
+
+@bead_inventory_bp.route('/restock-suggestions', methods=['GET'])
+@token_required
+def get_restock_suggestions():
+    limit = _to_int(request.args.get('limit', 20), 20)
+    if limit < 1:
+        limit = 20
+    if limit > 200:
+        limit = 200
+
+    materials = BeadMaterial.query.filter_by(status='active').all()
+    suggestions = []
+    for material in materials:
+        suggestion = _build_restock_suggestion(material)
+        if suggestion:
+            suggestions.append(suggestion)
+
+    suggestions.sort(
+        key=lambda item: (
+            RESTOCK_URGENCY_ORDER.get(item.get('urgency'), 3),
+            -float(item.get('shortage_grams') or 0.0),
+            float(item.get('estimated_days_left')) if isinstance(item.get('estimated_days_left'), (int, float)) else float('inf')
+        )
+    )
+    suggestions = suggestions[:limit]
+
+    summary = {
+        'total_items': len(suggestions),
+        'critical_items': sum(1 for item in suggestions if item.get('urgency') == 'critical'),
+        'high_items': sum(1 for item in suggestions if item.get('urgency') == 'high'),
+        'suggested_restock_grams': round(sum(float(item.get('suggested_restock_grams') or 0.0) for item in suggestions), 3),
+        'estimated_restock_cost': round(sum(float(item.get('estimated_restock_cost') or 0.0) for item in suggestions), 2)
+    }
+
+    return success_response(
+        {
+            'items': suggestions,
+            'summary': summary
+        },
+        'Restock suggestions generated'
+    )

@@ -5,6 +5,7 @@ import { formatServerDateTime } from '@/utils/dateTime'
 
 const logs = ref([])
 const loading = ref(false)
+const rollingBackLogId = ref(null)
 const currentPage = ref(1)
 const pageSize = ref(15)
 const total = ref(0)
@@ -112,7 +113,8 @@ function getModuleBadgeClass(module) {
     transaction: 'bg-emerald-100 text-emerald-800',
     timer: 'bg-orange-100 text-orange-800',
     data: 'bg-rose-100 text-rose-800',
-    bead_inventory: 'bg-teal-100 text-teal-800'
+    bead_inventory: 'bg-teal-100 text-teal-800',
+    log: 'bg-slate-200 text-slate-700'
   }
   return classes[module] || 'bg-slate-100 text-slate-700'
 }
@@ -143,7 +145,8 @@ function getActionBadgeClass(action) {
     stocktake: 'bg-violet-50 text-violet-700 border border-violet-200',
     conversion_standard_batch_update: 'bg-sky-50 text-sky-700 border border-sky-200',
     market_price_batch_update: 'bg-indigo-50 text-indigo-700 border border-indigo-200',
-    safe_stock_batch_update_by_common_color: 'bg-fuchsia-50 text-fuchsia-700 border border-fuchsia-200'
+    safe_stock_batch_update_by_common_color: 'bg-fuchsia-50 text-fuchsia-700 border border-fuchsia-200',
+    rollback: 'bg-slate-100 text-slate-700 border border-slate-300'
   }
   return classes[action] || 'bg-slate-50 text-slate-700 border border-slate-200'
 }
@@ -159,7 +162,36 @@ function normalizeLogItem(item = {}) {
     typeLabel: item.type_label || '其他',
     description: item.description || '-',
     operator: item.operator || '-',
-    displayTime: formatActivityTime(timestamp)
+    displayTime: formatActivityTime(timestamp),
+    rollbackSupported: Boolean(item.rollback_supported),
+    rollbackLabel: item.rollback_label || '回滚',
+    rollbackReason: item.rollback_reason || ''
+  }
+}
+
+function isRollingBackLog(logId) {
+  return rollingBackLogId.value === logId
+}
+
+async function handleRollback(log) {
+  if (!log?.id || !log.rollbackSupported || isRollingBackLog(log.id)) return
+
+  const actionText = log.rollbackLabel || '回滚'
+  const ok = window.confirm(`确认执行“${actionText}”吗？操作完成后会写入系统日志。`)
+  if (!ok) return
+
+  rollingBackLogId.value = log.id
+  try {
+    const response = await api.post(`/logs/${log.id}/rollback`)
+    const payload = response?.data ?? response ?? {}
+    const action = payload?.action || actionText
+    showFeedback('success', `${action}成功`)
+    await fetchLogs()
+  } catch (error) {
+    console.error('Failed to rollback log:', error)
+    showFeedback('error', error?.response?.data?.message || error?.message || '回滚失败，请稍后重试。')
+  } finally {
+    rollingBackLogId.value = null
   }
 }
 
@@ -415,11 +447,23 @@ onBeforeUnmount(() => {
               </div>
               <p class="text-sm text-slate-700">{{ log.typeLabel }}</p>
               <p class="text-sm text-slate-600 leading-6">{{ log.description }}</p>
+              <div class="pt-1">
+                <button
+                  v-if="log.rollbackSupported"
+                  type="button"
+                  :disabled="isRollingBackLog(log.id)"
+                  @click="handleRollback(log)"
+                  class="inline-flex h-8 items-center rounded-lg border border-amber-300 bg-amber-50 px-3 text-xs font-semibold text-amber-700 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {{ isRollingBackLog(log.id) ? '回滚中...' : (log.rollbackLabel || '回滚') }}
+                </button>
+                <p v-else-if="log.rollbackReason" class="text-xs text-slate-400">不可回滚：{{ log.rollbackReason }}</p>
+              </div>
             </article>
           </div>
 
           <div class="hidden md:block overflow-x-auto">
-            <table class="w-full min-w-[980px]">
+            <table class="w-full min-w-[1120px]">
               <thead class="bg-slate-50/80">
                 <tr class="border-b border-slate-200">
                   <th class="px-4 py-3 text-left text-sm font-semibold text-slate-600">时间</th>
@@ -428,6 +472,7 @@ onBeforeUnmount(() => {
                   <th class="px-4 py-3 text-left text-sm font-semibold text-slate-600">类型</th>
                   <th class="px-4 py-3 text-left text-sm font-semibold text-slate-600">描述</th>
                   <th class="px-4 py-3 text-left text-sm font-semibold text-slate-600">操作员</th>
+                  <th class="px-4 py-3 text-left text-sm font-semibold text-slate-600">回滚</th>
                 </tr>
               </thead>
               <tbody>
@@ -452,6 +497,20 @@ onBeforeUnmount(() => {
                     <p class="line-clamp-2">{{ log.description }}</p>
                   </td>
                   <td class="px-4 py-3 text-sm text-slate-600">{{ log.operator }}</td>
+                  <td class="px-4 py-3 text-sm">
+                    <button
+                      v-if="log.rollbackSupported"
+                      type="button"
+                      :disabled="isRollingBackLog(log.id)"
+                      @click="handleRollback(log)"
+                      class="inline-flex h-8 items-center rounded-lg border border-amber-300 bg-amber-50 px-3 text-xs font-semibold text-amber-700 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {{ isRollingBackLog(log.id) ? '回滚中...' : (log.rollbackLabel || '回滚') }}
+                    </button>
+                    <span v-else class="text-xs text-slate-400">
+                      {{ log.rollbackReason || '-' }}
+                    </span>
+                  </td>
                 </tr>
               </tbody>
             </table>

@@ -1,7 +1,16 @@
 from datetime import datetime
+import re
 from flask_sqlalchemy import SQLAlchemy
 
 db = SQLAlchemy()
+MISC_MARKER_PATTERN = re.compile(r'\s*\[\[MISC_B64:[A-Za-z0-9_-]+\]\]\s*$')
+
+
+def _strip_misc_marker(description):
+    text = str(description or '').strip()
+    if not text:
+        return ''
+    return MISC_MARKER_PATTERN.sub('', text).strip()
 
 
 class User(db.Model):
@@ -113,7 +122,7 @@ class Transaction(db.Model):
             'amount': self.amount,
             'bonus_amount': self.bonus_amount,
             'payment_method': self.payment_method,
-            'description': self.description,
+            'description': _strip_misc_marker(self.description),
             'activity_id': self.activity_id,
             'operator': self.operator,
             'transaction_time': self.transaction_time.isoformat() if self.transaction_time else None

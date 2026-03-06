@@ -61,8 +61,25 @@ export function createTimerConsumeForm(customerId = '') {
     largeImages: 0,
     extraSmallImages: 0,
     extraLargeImages: 0,
+    miscSelections: {},
     notes: ''
   }
+}
+
+function normalizeMiscSelections(selectionMap = {}) {
+  if (!selectionMap || typeof selectionMap !== 'object') return {}
+
+  const normalized = {}
+  Object.entries(selectionMap).forEach(([rawKey, rawValue]) => {
+    const key = String(rawKey || '').trim()
+    if (!key) return
+
+    const amount = Number(rawValue)
+    if (!Number.isFinite(amount) || amount < 0) return
+
+    normalized[key] = Math.floor(amount)
+  })
+  return normalized
 }
 
 export function validateTimerConsumeForm(form = {}, customers = []) {
@@ -117,7 +134,8 @@ export function buildTimerConsumeNotesPayload(form = {}) {
       largeImages: Number(form.largeImages) || 0,
       extraSmallImages: Number(form.extraSmallImages) || 0,
       extraLargeImages: Number(form.extraLargeImages) || 0
-    }
+    },
+    miscSelections: normalizeMiscSelections(form.miscSelections)
   })
 }
 

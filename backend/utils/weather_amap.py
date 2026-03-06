@@ -209,28 +209,54 @@ def _map_open_meteo_weather_text(weather_code):
     return weather_map.get(code, '未知')
 
 
+_DEFAULT_LOCATION_COORDS = {
+    '宁波市鄞州区下应街道': {'latitude': 29.8, 'longitude': 121.55},
+    '宁波': {'latitude': 29.8683, 'longitude': 121.5440},
+    '鄞州': {'latitude': 29.8, 'longitude': 121.55},
+    'default': {'latitude': 29.8, 'longitude': 121.55}
+}
+
+
 def _load_weather_from_open_meteo(timeout_seconds, location_text):
     city_label = str(current_app.config.get('AMAP_WEATHER_CITY_LABEL') or '').strip() or '宁波市鄞州区下应街道'
-    geocode_url = _build_url(
-        'https://geocoding-api.open-meteo.com',
-        '/v1/search',
-        {
-            'name': location_text,
-            'count': 1,
-            'language': 'zh',
-            'format': 'json'
-        }
-    )
-    geocode_payload = _http_get_json_without_quota(geocode_url, timeout_seconds)
-    results = geocode_payload.get('results') or []
-    if not results:
-        raise WeatherServiceError('天气服务地区解析失败', 502)
 
-    result = results[0]
-    latitude = result.get('latitude')
-    longitude = result.get('longitude')
+    latitude = None
+    longitude = None
+    city = city_label
+
+    default_coords = _DEFAULT_LOCATION_COORDS.get(location_text) or _DEFAULT_LOCATION_COORDS.get('default')
+    
+    try:
+        geocode_url = _build_url(
+            'https://geocoding-api.open-meteo.com',
+            '/v1/search',
+            {
+                'name': location_text,
+                'count': 1,
+                'language': 'zh',
+                'format': 'json'
+            }
+        )
+        geocode_payload = _http_get_json_without_quota(geocode_url, timeout_seconds)
+        results = geocode_payload.get('results') or []
+        
+        if results:
+            result = results[0]
+            latitude = result.get('latitude')
+            longitude = result.get('longitude')
+            if latitude is not None and longitude is not None:
+                city_parts = [result.get('name'), result.get('admin1'), result.get('country')]
+                city = ' '.join([str(part).strip() for part in city_parts if str(part or '').strip()]) or city_label
+    except Exception as e:
+        current_app.logger.warning(f'Open-Meteo geocoding failed: {e}, using default coordinates')
+
     if latitude is None or longitude is None:
-        raise WeatherServiceError('天气服务地区坐标解析失败', 502)
+        if default_coords:
+            latitude = default_coords['latitude']
+            longitude = default_coords['longitude']
+            current_app.logger.info(f'Using default coordinates for {location_text}: {latitude}, {longitude}')
+        else:
+            raise WeatherServiceError('天气服务地区坐标解析失败', 502)
 
     forecast_url = _build_url(
         'https://api.open-meteo.com',
@@ -250,8 +276,6 @@ def _load_weather_from_open_meteo(timeout_seconds, location_text):
     temp_max_arr = daily.get('temperature_2m_max') or []
     temp_min_arr = daily.get('temperature_2m_min') or []
 
-    city_parts = [result.get('name'), result.get('admin1'), result.get('country')]
-    city = ' '.join([str(part).strip() for part in city_parts if str(part or '').strip()]) or city_label
     weather_code = current.get('weather_code')
 
     return {

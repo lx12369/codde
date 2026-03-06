@@ -25,6 +25,9 @@ const DEFAULT_BILLING_RULES = {
   },
   overtime: {
     ratePerMinute: 0.5
+  },
+  misc: {
+    items: []
   }
 }
 
@@ -84,6 +87,52 @@ export function getPackagePlanBaseFee(packagePlan = '', rawRules = {}) {
   return round2(Math.max(0, toNumber(map[packagePlan], 0)))
 }
 
+function normalizeMiscRules(rawMisc = {}) {
+  const sourceItems = Array.isArray(rawMisc)
+    ? rawMisc
+    : Array.isArray(rawMisc?.items)
+      ? rawMisc.items
+      : []
+
+  const seenNames = new Set()
+
+  const items = sourceItems
+    .filter((item) => item && typeof item === 'object')
+    .map((item, index) => {
+      const name = String(item.name || '').trim()
+      const currentStock = Number(item.current_stock)
+      const safeStock = Number(item.safe_stock)
+      return {
+        id: String(item.id || `misc_${index + 1}`).trim() || `misc_${index + 1}`,
+        name,
+        unit_price: Math.max(0, toNumber(item.unit_price, 0)),
+        unit_label: String(item.unit_label || '个').trim() || '个',
+        enabled: Boolean(item.enabled),
+        current_stock: Number.isFinite(currentStock) && currentStock >= 0 ? currentStock : 0,
+        safe_stock: Number.isFinite(safeStock) && safeStock >= 0 ? safeStock : 0,
+        low_stock_alert: item.low_stock_alert !== false,
+        sort_order: toInteger(item.sort_order, index + 1)
+      }
+    })
+    .filter((item) => {
+      if (!item.name) return false
+      const key = item.name.toLowerCase()
+      if (seenNames.has(key)) return false
+      seenNames.add(key)
+      return true
+    })
+    .sort((left, right) => {
+      if (left.sort_order !== right.sort_order) return left.sort_order - right.sort_order
+      return left.name.localeCompare(right.name, 'zh-CN')
+    })
+    .map((item, index) => ({
+      ...item,
+      sort_order: index + 1
+    }))
+
+  return { items }
+}
+
 export function normalizeBillingRules(raw = {}) {
   return {
     limited: {
@@ -105,7 +154,8 @@ export function normalizeBillingRules(raw = {}) {
     overtime: {
       ...DEFAULT_BILLING_RULES.overtime,
       ...(raw.overtime || {})
-    }
+    },
+    misc: normalizeMiscRules(raw.misc || DEFAULT_BILLING_RULES.misc)
   }
 }
 
@@ -273,6 +323,9 @@ export function calculateConsumptionAmount(options = {}, rawRules = {}) {
   const extraSmallImages = Math.max(0, toInteger(options.extraSmallImages, 0))
   const extraLargeImages = Math.max(0, toInteger(options.extraLargeImages, 0))
   const additionalFee = Math.max(0, toNumber(options.additionalFee, 0))
+  const miscSelections = options.miscSelections && typeof options.miscSelections === 'object'
+    ? options.miscSelections
+    : {}
 
   const details = []
   let appliedBillingType = billingType
@@ -362,16 +415,32 @@ export function calculateConsumptionAmount(options = {}, rawRules = {}) {
     largeImages * toNumber(rules.materials.largeImageFee) +
     extraSmallImages * toNumber(rules.materials.extraSmallImageFee) +
     extraLargeImages * toNumber(rules.materials.extraLargeImageFee)
+  let miscFee = 0
+  const miscDetails = []
+
+  const enabledMiscItems = Array.isArray(rules.misc?.items)
+    ? rules.misc.items.filter((item) => Boolean(item?.enabled))
+    : []
+
+  enabledMiscItems.forEach((item) => {
+    const quantity = Math.max(0, toInteger(miscSelections[item.id], 0))
+    if (quantity <= 0) return
+
+    const lineFee = quantity * toNumber(item.unit_price, 0)
+    miscFee += lineFee
+    miscDetails.push(`${item.name}x${quantity}`)
+  })
 
   if (largeImages > 0) details.push(`大图${largeImages}张`)
   if (extraSmallImages > 0) details.push(`超量小图${extraSmallImages}张`)
   if (extraLargeImages > 0) details.push(`超量大图${extraLargeImages}张`)
+  if (miscDetails.length > 0) details.push(`杂项${miscDetails.join('、')}`)
 
   if (additionalFee > 0) {
     details.push(`附加费用¥${additionalFee.toFixed(2)}`)
   }
 
-  const total = round2(baseFee + overtimeFee + materialFee + additionalFee)
+  const total = round2(baseFee + overtimeFee + materialFee + miscFee + additionalFee)
 
   return {
     billingType: appliedBillingType,
@@ -380,6 +449,7 @@ export function calculateConsumptionAmount(options = {}, rawRules = {}) {
     baseFee: round2(baseFee),
     overtimeFee: round2(overtimeFee),
     materialFee: round2(materialFee),
+    miscFee: round2(miscFee),
     additionalFee: round2(additionalFee),
     total,
     details,
@@ -392,6 +462,7 @@ export function calculateConsumptionAmount(options = {}, rawRules = {}) {
       largeImages,
       extraSmallImages,
       extraLargeImages,
+      miscSelections,
       packagePlan: options.packagePlan || ''
     }
   }

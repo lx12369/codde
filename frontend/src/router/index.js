@@ -50,6 +50,11 @@ const router = createRouter({
           component: () => import('@/views/Billing.vue')
         },
         {
+          path: 'misc-billing',
+          name: 'misc-billing',
+          component: () => import('@/views/MiscBilling.vue')
+        },
+        {
           path: 'bead-inventory',
           name: 'bead-inventory',
           component: () => import('@/views/BeadInventory.vue')

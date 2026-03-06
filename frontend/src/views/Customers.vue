@@ -20,7 +20,7 @@ const batchDeleteLoading = ref(false)
 const customers = ref([])
 const total = ref(0)
 const currentPage = ref(1)
-const pageSize = ref(20)
+const pageSize = ref(15)
 const searchKeyword = ref('')
 const selectedCustomerIds = ref(new Set())
 
@@ -77,6 +77,7 @@ const manualConsumeForm = reactive({
   customerId: '',
   amount: '',
   description: '',
+  miscSelections: {},
   meituanCustomer: false
 })
 
@@ -90,6 +91,7 @@ const autoConsumeForm = reactive({
   largeImages: 0,
   extraSmallImages: 0,
   extraLargeImages: 0,
+  miscSelections: {},
   additionalFee: 0,
   notes: '',
   meituanCustomer: false
@@ -102,6 +104,7 @@ const timerConsumeForm = reactive({
   largeImages: 0,
   extraSmallImages: 0,
   extraLargeImages: 0,
+  miscSelections: {},
   notes: ''
 })
 
@@ -198,6 +201,24 @@ const customerTransactions = computed(() => {
   return transactions.map(normalizeTransaction)
 })
 
+const enabledMiscItems = computed(() => {
+  const source = Array.isArray(billingRules.value?.misc?.items) ? billingRules.value.misc.items : []
+  return source
+    .filter((item) => item && item.enabled)
+    .map((item) => ({
+      ...item,
+      current_stock: Math.max(0, Number(item.current_stock) || 0),
+      safe_stock: Math.max(0, Number(item.safe_stock) || 0),
+      unit_label: String(item.unit_label || '个')
+    }))
+    .sort((left, right) => {
+      const leftOrder = Number(left.sort_order || 0)
+      const rightOrder = Number(right.sort_order || 0)
+      if (leftOrder !== rightOrder) return leftOrder - rightOrder
+      return String(left.name || '').localeCompare(String(right.name || ''), 'zh-CN')
+    })
+})
+
 const autoConsumePreview = computed(() =>
   calculateConsumptionAmount(
     {
@@ -209,6 +230,7 @@ const autoConsumePreview = computed(() =>
       largeImages: autoConsumeForm.largeImages,
       extraSmallImages: autoConsumeForm.extraSmallImages,
       extraLargeImages: autoConsumeForm.extraLargeImages,
+      miscSelections: autoConsumeForm.miscSelections,
       additionalFee: autoConsumeForm.additionalFee
     },
     billingRules.value
@@ -220,14 +242,18 @@ const manualInputAmount = computed(() => {
   return Number.isFinite(value) ? Math.max(0, value) : 0
 })
 
+const manualMiscSummary = computed(() => buildMiscChargeSummary(manualConsumeForm.miscSelections))
+const timerMiscSummary = computed(() => buildMiscChargeSummary(timerConsumeForm.miscSelections))
+const manualRawTotal = computed(() => manualInputAmount.value + manualMiscSummary.value.fee)
+
 const manualMeituanDeduction = computed(() => (
   manualConsumeForm.meituanCustomer
-    ? calculateMeituanDeduction(manualInputAmount.value)
+    ? calculateMeituanDeduction(manualRawTotal.value)
     : 0
 ))
 
 const manualFinalAmount = computed(() =>
-  applyDeduction(manualInputAmount.value, manualMeituanDeduction.value)
+  applyDeduction(manualRawTotal.value, manualMeituanDeduction.value)
 )
 
 const autoMeituanDeduction = computed(() => (
@@ -266,6 +292,103 @@ function getFeedbackClass(tone) {
   if (tone === 'success') return 'management-feedback--success'
   if (tone === 'error') return 'management-feedback--error'
   return 'management-feedback--info'
+}
+
+function createMiscSelectionMap(seed = {}) {
+  const source = seed && typeof seed === 'object' ? seed : {}
+  const result = {}
+  enabledMiscItems.value.forEach((item) => {
+    const current = Number(source[item.id])
+    const available = getMiscAvailableQuantity(item)
+    const normalized = Number.isFinite(current) && current >= 0 ? Math.floor(current) : 0
+    result[item.id] = Math.min(available, normalized)
+  })
+  return result
+}
+
+function getMiscAvailableQuantity(item) {
+  return Math.max(0, Math.floor(Number(item?.current_stock) || 0))
+}
+
+function formatMiscStock(item) {
+  return `${getMiscAvailableQuantity(item)}${item?.unit_label || '个'}`
+}
+
+function clampMiscSelection(selectionMap, item) {
+  if (!selectionMap || !item?.id) return
+  const available = getMiscAvailableQuantity(item)
+  const current = Number(selectionMap[item.id])
+  const normalized = Number.isFinite(current) && current >= 0 ? Math.floor(current) : 0
+  selectionMap[item.id] = Math.min(available, normalized)
+}
+
+function handleMiscSelectionInput(selectionMap, item, rawValue) {
+  if (!selectionMap || !item?.id) return
+  selectionMap[item.id] = rawValue
+  clampMiscSelection(selectionMap, item)
+}
+
+function buildMiscChargeSummary(selectionMap = {}) {
+  const safeMap = selectionMap && typeof selectionMap === 'object' ? selectionMap : {}
+  const details = []
+  let fee = 0
+
+  enabledMiscItems.value.forEach((item) => {
+    const count = Math.min(getMiscAvailableQuantity(item), Number(safeMap[item.id]))
+    if (!Number.isFinite(count) || count <= 0 || !Number.isInteger(count)) return
+
+    fee += count * (Number(item.unit_price) || 0)
+    details.push(`${item.name}x${count}`)
+  })
+
+  return {
+    fee: Math.round((fee + Number.EPSILON) * 100) / 100,
+    details
+  }
+}
+
+function syncAutoMiscSelections(seed = null) {
+  const source = seed !== null ? seed : autoConsumeForm.miscSelections
+  autoConsumeForm.miscSelections = createMiscSelectionMap(source)
+}
+
+function syncManualMiscSelections(seed = null) {
+  const source = seed !== null ? seed : manualConsumeForm.miscSelections
+  manualConsumeForm.miscSelections = createMiscSelectionMap(source)
+}
+
+function syncTimerMiscSelections(seed = null) {
+  const source = seed !== null ? seed : timerConsumeForm.miscSelections
+  timerConsumeForm.miscSelections = createMiscSelectionMap(source)
+}
+
+function collectMiscSelectionErrors(selectionMap = {}) {
+  const errors = []
+  enabledMiscItems.value.forEach((item) => {
+    const raw = selectionMap[item.id]
+    if (raw === '' || raw === null || raw === undefined) return
+    const count = Number(raw)
+    if (!Number.isFinite(count) || count < 0 || !Number.isInteger(count)) {
+      errors.push(`${item.name}数量必须为非负整数`)
+      return
+    }
+    if (count > getMiscAvailableQuantity(item)) {
+      errors.push(`${item.name}库存不足（可用 ${formatMiscStock(item)}）`)
+    }
+  })
+  return errors
+}
+
+function collectAutoMiscErrors(selectionMap = {}) {
+  return collectMiscSelectionErrors(selectionMap)
+}
+
+function collectManualMiscErrors(selectionMap = {}) {
+  return collectMiscSelectionErrors(selectionMap)
+}
+
+function collectTimerMiscErrors(selectionMap = {}) {
+  return collectMiscSelectionErrors(selectionMap)
 }
 
 function normalizeCustomer(customer = {}) {
@@ -610,9 +733,15 @@ async function fetchBillingRules() {
     const response = await api.get('/billing-rules')
     const payload = response?.data || response || {}
     billingRules.value = normalizeBillingRules(payload)
+    syncManualMiscSelections()
+    syncAutoMiscSelections()
+    syncTimerMiscSelections()
   } catch (error) {
     console.error('Failed to fetch billing rules:', error)
     billingRules.value = normalizeBillingRules()
+    syncManualMiscSelections()
+    syncAutoMiscSelections()
+    syncTimerMiscSelections()
   }
 }
 
@@ -708,6 +837,7 @@ function resetConsumeForms(customerId = '') {
   manualConsumeForm.customerId = customerId
   manualConsumeForm.amount = ''
   manualConsumeForm.description = ''
+  syncManualMiscSelections({})
   manualConsumeForm.meituanCustomer = false
 
   autoConsumeForm.customerId = customerId
@@ -719,6 +849,7 @@ function resetConsumeForms(customerId = '') {
   autoConsumeForm.largeImages = 0
   autoConsumeForm.extraSmallImages = 0
   autoConsumeForm.extraLargeImages = 0
+  syncAutoMiscSelections({})
   autoConsumeForm.additionalFee = 0
   autoConsumeForm.notes = ''
   autoConsumeForm.meituanCustomer = false
@@ -729,6 +860,7 @@ function resetConsumeForms(customerId = '') {
   timerConsumeForm.largeImages = 0
   timerConsumeForm.extraSmallImages = 0
   timerConsumeForm.extraLargeImages = 0
+  syncTimerMiscSelections({})
   timerConsumeForm.notes = ''
 
   manualConsumeErrors.value = {}
@@ -776,12 +908,18 @@ function validateManualConsumeForm() {
   } else if (!validCustomers.value.some((customer) => customer.id === manualConsumeForm.customerId)) {
     errors.customerId = '请选择有效客户'
   }
-  if (!manualConsumeForm.amount || parseFloat(manualConsumeForm.amount) <= 0) {
-    errors.amount = '请输入有效金额'
+  if (manualRawTotal.value <= 0) {
+    errors.amount = '请输入有效金额或杂项数量'
   }
   if (!manualConsumeForm.description?.trim()) {
     errors.description = '请输入消费描述'
   }
+
+  const miscErrors = collectManualMiscErrors(manualConsumeForm.miscSelections)
+  if (miscErrors.length > 0) {
+    errors.misc = miscErrors[0]
+  }
+
   manualConsumeErrors.value = errors
   return Object.keys(errors).length === 0
 }
@@ -796,6 +934,12 @@ function validateAutoConsumeForm() {
   if (autoFinalAmount.value <= 0) {
     errors.total = '自动结算金额必须大于0'
   }
+
+  const miscErrors = collectAutoMiscErrors(autoConsumeForm.miscSelections)
+  if (miscErrors.length > 0) {
+    errors.misc = miscErrors[0]
+  }
+
   autoConsumeErrors.value = errors
   return Object.keys(errors).length === 0
 }
@@ -813,6 +957,12 @@ function validateTimerConsumeForm() {
   if (!timerConsumeForm.packagePlan) {
     errors.packagePlan = '请选择套餐方案'
   }
+
+  const miscErrors = collectTimerMiscErrors(timerConsumeForm.miscSelections)
+  if (miscErrors.length > 0) {
+    errors.misc = miscErrors[0]
+  }
+
   timerConsumeErrors.value = errors
   return Object.keys(errors).length === 0
 }
@@ -853,6 +1003,7 @@ async function submitRecharge() {
 async function submitManualConsume() {
   if (!validateManualConsumeForm()) return
   const amount = manualFinalAmount.value
+  const miscSelections = createMiscSelectionMap(manualConsumeForm.miscSelections)
   const currentBalance = await fetchCustomerBalance(manualConsumeForm.customerId)
   if (currentBalance !== null && amount > currentBalance) {
     manualConsumeErrors.value = { ...manualConsumeErrors.value, amount: '余额不足' }
@@ -860,20 +1011,27 @@ async function submitManualConsume() {
     return
   }
 
-  const description = manualConsumeForm.meituanCustomer
-    ? `${manualConsumeForm.description} - 美团客户(抽成￥${formatAmount(manualMeituanDeduction.value)})`
-    : manualConsumeForm.description
+  const noteParts = [String(manualConsumeForm.description || '').trim()]
+  if (manualMiscSummary.value.details.length > 0) {
+    noteParts.push(`杂项${manualMiscSummary.value.details.join('、')}`)
+  }
+  if (manualConsumeForm.meituanCustomer) {
+    noteParts.push(`美团客户(抽成￥${formatAmount(manualMeituanDeduction.value)})`)
+  }
+  const description = noteParts.filter(Boolean).join('；')
 
   await api.post('/transactions/consumption', {
     customer_id: manualConsumeForm.customerId,
     amount,
-    description
+    description,
+    misc_selections: miscSelections
   })
 }
 
 async function submitAutoConsume() {
   if (!validateAutoConsumeForm()) return
   const amount = autoFinalAmount.value
+  const miscSelections = createMiscSelectionMap(autoConsumeForm.miscSelections)
   const currentBalance = await fetchCustomerBalance(autoConsumeForm.customerId)
   if (currentBalance !== null && amount > currentBalance) {
     autoConsumeErrors.value = { ...autoConsumeErrors.value, total: '余额不足，无法结算' }
@@ -895,13 +1053,15 @@ async function submitAutoConsume() {
   await api.post('/transactions/consumption', {
     customer_id: autoConsumeForm.customerId,
     amount,
-    description
+    description,
+    misc_selections: miscSelections
   })
 }
 
 async function submitTimerConsume() {
   if (!validateTimerConsumeForm()) return
 
+  const normalizedMiscSelections = createMiscSelectionMap(timerConsumeForm.miscSelections)
   const notesPayload = JSON.stringify({
     note: timerConsumeForm.notes || '',
     packagePlan: timerConsumeForm.packagePlan || getDefaultTimerPackagePlan(timerConsumeForm.timerType),
@@ -909,7 +1069,8 @@ async function submitTimerConsume() {
       largeImages: Number(timerConsumeForm.largeImages) || 0,
       extraSmallImages: Number(timerConsumeForm.extraSmallImages) || 0,
       extraLargeImages: Number(timerConsumeForm.extraLargeImages) || 0
-    }
+    },
+    miscSelections: normalizedMiscSelections
   })
 
   await api.post('/active-timers', {
@@ -1680,6 +1841,38 @@ onUnmounted(() => {
                 </p>
               </div>
 
+              <div v-if="enabledMiscItems.length > 0" class="space-y-3">
+                <div class="flex items-center justify-between">
+                  <h4 class="text-sm font-medium text-gray-700">杂项计费（仅整数）</h4>
+                  <button
+                    type="button"
+                    class="text-xs text-blue-600 hover:text-blue-700"
+                    @click="syncManualMiscSelections({})"
+                  >
+                    一键清零
+                  </button>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div v-for="item in enabledMiscItems" :key="`manual-misc-${item.id}`">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">
+                      {{ item.name }}（¥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
+                    </label>
+                    <p class="text-xs text-slate-500 mb-1">可用库存：{{ formatMiscStock(item) }}</p>
+                    <input
+                      v-model.number="manualConsumeForm.miscSelections[item.id]"
+                      type="number"
+                      min="0"
+                      :max="getMiscAvailableQuantity(item)"
+                      step="1"
+                      class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      @input="handleMiscSelectionInput(manualConsumeForm.miscSelections, item, $event.target.value)"
+                      @change="clampMiscSelection(manualConsumeForm.miscSelections, item)"
+                    >
+                  </div>
+                </div>
+                <p v-if="manualConsumeErrors.misc" class="text-red-500 text-xs mt-1">{{ manualConsumeErrors.misc }}</p>
+              </div>
+
               <label class="inline-flex items-center gap-2 text-sm text-gray-700">
                 <input
                   v-model="manualConsumeForm.meituanCustomer"
@@ -1689,9 +1882,11 @@ onUnmounted(() => {
                 美团客户（消费金额抽成7%）
               </label>
 
-              <div v-if="manualConsumeForm.meituanCustomer" class="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800 space-y-1">
-                <p>原始金额：￥{{ formatAmount(manualInputAmount) }}</p>
-                <p>美团抽成：-￥{{ formatAmount(manualMeituanDeduction) }}</p>
+              <div v-if="manualConsumeForm.meituanCustomer || manualMiscSummary.fee > 0" class="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800 space-y-1">
+                <p>手动金额：￥{{ formatAmount(manualInputAmount) }}</p>
+                <p>杂项费用：￥{{ formatAmount(manualMiscSummary.fee) }}</p>
+                <p>原始金额：￥{{ formatAmount(manualRawTotal) }}</p>
+                <p v-if="manualConsumeForm.meituanCustomer">美团抽成：-￥{{ formatAmount(manualMeituanDeduction) }}</p>
                 <p class="font-semibold">结算金额：￥{{ formatAmount(manualFinalAmount) }}</p>
               </div>
             </div>
@@ -1775,6 +1970,37 @@ onUnmounted(() => {
                 </div>
               </div>
 
+              <div v-if="enabledMiscItems.length > 0" class="space-y-3">
+                <div class="flex items-center justify-between">
+                  <h4 class="text-sm font-medium text-gray-700">杂项计费（仅整数）</h4>
+                  <button
+                    type="button"
+                    class="text-xs text-blue-600 hover:text-blue-700"
+                    @click="syncAutoMiscSelections({})"
+                  >
+                    一键清零
+                  </button>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div v-for="item in enabledMiscItems" :key="item.id">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">
+                      {{ item.name }}（¥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
+                    </label>
+                    <p class="text-xs text-slate-500 mb-1">可用库存：{{ formatMiscStock(item) }}</p>
+                    <input
+                      v-model.number="autoConsumeForm.miscSelections[item.id]"
+                      type="number"
+                      min="0"
+                      :max="getMiscAvailableQuantity(item)"
+                      step="1"
+                      class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      @input="handleMiscSelectionInput(autoConsumeForm.miscSelections, item, $event.target.value)"
+                      @change="clampMiscSelection(autoConsumeForm.miscSelections, item)"
+                    >
+                  </div>
+                </div>
+              </div>
+
               <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">备注</label>
                 <textarea v-model="autoConsumeForm.notes" rows="2" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" placeholder="可选"></textarea>
@@ -1794,6 +2020,7 @@ onUnmounted(() => {
                 <p>基础费用: ￥{{ formatAmount(autoConsumePreview.baseFee) }}</p>
                 <p>超时费用: ￥{{ formatAmount(autoConsumePreview.overtimeFee) }}</p>
                 <p>耗材费用: ￥{{ formatAmount(autoConsumePreview.materialFee) }}</p>
+                <p>杂项费用: ￥{{ formatAmount(autoConsumePreview.miscFee) }}</p>
                 <p>附加费用: ￥{{ formatAmount(autoConsumePreview.additionalFee) }}</p>
                 <p v-if="autoConsumeForm.meituanCustomer">美团抽成: -￥{{ formatAmount(autoMeituanDeduction) }}</p>
                 <p class="font-semibold text-base">
@@ -1801,6 +2028,7 @@ onUnmounted(() => {
                 </p>
               </div>
               <p v-if="autoConsumeErrors.total" class="text-red-500 text-xs mt-1">{{ autoConsumeErrors.total }}</p>
+              <p v-if="autoConsumeErrors.misc" class="text-red-500 text-xs mt-1">{{ autoConsumeErrors.misc }}</p>
             </div>
 
             <div v-else class="space-y-4">
@@ -1852,6 +2080,41 @@ onUnmounted(() => {
                   <label class="block text-sm font-medium text-gray-700 mb-1">超量大图</label>
                   <input v-model.number="timerConsumeForm.extraLargeImages" type="number" min="0" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
                 </div>
+              </div>
+
+              <div v-if="enabledMiscItems.length > 0" class="space-y-3">
+                <div class="flex items-center justify-between">
+                  <h4 class="text-sm font-medium text-gray-700">杂项计费（仅整数）</h4>
+                  <button
+                    type="button"
+                    class="text-xs text-blue-600 hover:text-blue-700"
+                    @click="syncTimerMiscSelections({})"
+                  >
+                    一键清零
+                  </button>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div v-for="item in enabledMiscItems" :key="`timer-misc-${item.id}`">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">
+                      {{ item.name }}（¥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
+                    </label>
+                    <p class="text-xs text-slate-500 mb-1">可用库存：{{ formatMiscStock(item) }}</p>
+                    <input
+                      v-model.number="timerConsumeForm.miscSelections[item.id]"
+                      type="number"
+                      min="0"
+                      :max="getMiscAvailableQuantity(item)"
+                      step="1"
+                      class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      @input="handleMiscSelectionInput(timerConsumeForm.miscSelections, item, $event.target.value)"
+                      @change="clampMiscSelection(timerConsumeForm.miscSelections, item)"
+                    >
+                  </div>
+                </div>
+                <div class="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800">
+                  预计杂项费用：￥{{ formatAmount(timerMiscSummary.fee) }}
+                </div>
+                <p v-if="timerConsumeErrors.misc" class="text-red-500 text-xs mt-1">{{ timerConsumeErrors.misc }}</p>
               </div>
 
               <div>

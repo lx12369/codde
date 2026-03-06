@@ -78,7 +78,11 @@ export const activityApi = {
 
 export const billingApi = {
   getBillingRules: () => api.get('/billing-rules'),
-  updateBillingRules: (data) => api.put('/billing-rules', data)
+  updateBillingRules: (data) => api.put('/billing-rules', data),
+  getMiscBillingRules: () => api.get('/billing-rules'),
+  updateMiscBillingRules: (items) => api.put('/billing-rules', { misc: { items } }),
+  inboundMiscBillingStock: (id, data) => api.post(`/billing-rules/misc-items/${id}/inbound`, data),
+  outboundMiscBillingStock: (id, data) => api.post(`/billing-rules/misc-items/${id}/outbound`, data)
 }
 
 export const timerApi = {
@@ -109,7 +113,8 @@ export const beadInventoryApi = {
   createOutbound: (data) => api.post('/bead-inventory/outbound', data),
   createStocktake: (data) => api.post('/bead-inventory/stocktake', data),
   getLedger: (params) => api.get('/bead-inventory/ledger', { params }),
-  getAlerts: () => api.get('/bead-inventory/alerts')
+  getAlerts: () => api.get('/bead-inventory/alerts'),
+  getRestockSuggestions: (params) => api.get('/bead-inventory/restock-suggestions', { params })
 }
 
 export const dataApi = {

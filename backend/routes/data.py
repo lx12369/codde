@@ -8,6 +8,7 @@ from sqlalchemy import Boolean, Date, DateTime, Float, Integer, Numeric
 from models.models import (
     db,
     User,
+    RevokedToken,
     Customer,
     Balance,
     Transaction,
@@ -26,10 +27,11 @@ from utils.response import success_response, error_response
 
 data_bp = Blueprint('data', __name__)
 
-BACKUP_SCHEMA_VERSION = 3
+BACKUP_SCHEMA_VERSION = 4
 
 MODEL_REGISTRY = {
     'users': User,
+    'revoked_tokens': RevokedToken,
     'customers': Customer,
     'balances': Balance,
     'transactions': Transaction,
@@ -45,6 +47,7 @@ MODEL_REGISTRY = {
 
 BACKUP_ORDER = [
     'users',
+    'revoked_tokens',
     'customers',
     'balances',
     'transactions',
@@ -60,6 +63,7 @@ BACKUP_ORDER = [
 
 RESTORE_INSERT_ORDER = [
     'users',
+    'revoked_tokens',
     'customers',
     'activities',
     'billing_rules',
@@ -74,6 +78,7 @@ RESTORE_INSERT_ORDER = [
 ]
 
 RESTORE_DELETE_ORDER = [
+    'revoked_tokens',
     'logs',
     'bead_stocktakes',
     'bead_inventory_ledgers',
@@ -119,6 +124,7 @@ def _build_storage_info():
 
     data_counts = {
         'users': User.query.count(),
+        'revoked_tokens': RevokedToken.query.count(),
         'customers': Customer.query.count(),
         'balances': Balance.query.count(),
         'transactions': Transaction.query.count(),
@@ -293,7 +299,7 @@ def backup_data():
     write_log(
         'data_backup',
         (
-            f'执行数据备份：用户 {stats["users"]}，客户 {stats["customers"]}，交易 {stats["transactions"]}，余额 {stats["balances"]}，'
+            f'执行数据备份：用户 {stats["users"]}，令牌黑名单 {stats["revoked_tokens"]}，客户 {stats["customers"]}，交易 {stats["transactions"]}，余额 {stats["balances"]}，'
             f'活动 {stats["activities"]}，计费规则 {stats["billing_rules"]}，计时 {stats["active_timers"]}，'
             f'豆料 {stats["bead_materials"]}，豆仓库存 {stats["bead_inventory_balances"]}，豆仓流水 {stats["bead_inventory_ledgers"]}，'
             f'豆仓盘点 {stats["bead_stocktakes"]}，日志 {stats["logs"]}'
@@ -388,6 +394,7 @@ def clear_data():
 
     try:
         counts = {
+            'revoked_tokens': RevokedToken.query.count(),
             'logs': Log.query.count(),
             'bead_stocktakes': BeadStocktake.query.count(),
             'bead_inventory_ledgers': BeadInventoryLedger.query.count(),
@@ -402,6 +409,7 @@ def clear_data():
             'users': User.query.count()
         }
 
+        RevokedToken.query.delete()
         Log.query.delete()
         BeadStocktake.query.delete()
         BeadInventoryLedger.query.delete()
@@ -418,7 +426,7 @@ def clear_data():
         write_log(
             'data_clear',
             (
-                f'清空系统数据：用户保留 {counts["users"]}，客户 {counts["customers"]}，交易 {counts["transactions"]}，余额 {counts["balances"]}，'
+                f'清空系统数据：用户保留 {counts["users"]}，令牌黑名单 {counts["revoked_tokens"]}，客户 {counts["customers"]}，交易 {counts["transactions"]}，余额 {counts["balances"]}，'
                 f'活动 {counts["activities"]}，计费规则 {counts["billing_rules"]}，计时 {counts["active_timers"]}，'
                 f'豆料 {counts["bead_materials"]}，豆仓库存 {counts["bead_inventory_balances"]}，豆仓流水 {counts["bead_inventory_ledgers"]}，'
                 f'豆仓盘点 {counts["bead_stocktakes"]}，日志 {counts["logs"]}'

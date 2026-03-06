@@ -1,10 +1,13 @@
 import time
 import re
+import json
 from datetime import datetime
 from flask import Blueprint, request
 from models.models import db, ActiveTimer, Customer, Balance, Transaction
 from utils.audit_log import get_operator_name, write_log
 from utils.decorators import token_required
+from utils.misc_inventory_service import normalize_misc_selections, apply_misc_outbound
+from utils.misc_selection_codec import compose_description_with_misc
 from utils.response import success_response, error_response
 
 active_timers_bp = Blueprint('active_timers', __name__)
@@ -227,6 +230,14 @@ def settle_active_timer(timer_id):
     amount = _to_float(data.get('amount'), None)
     description = str(data.get('description', '')).strip()
     notes = str(data.get('notes', '')).strip()
+    misc_selections = normalize_misc_selections(data.get('misc_selections', data.get('miscSelections')))
+    if not misc_selections:
+        try:
+            parsed_timer_notes = json.loads(timer.notes or '{}')
+            if isinstance(parsed_timer_notes, dict):
+                misc_selections = normalize_misc_selections(parsed_timer_notes.get('miscSelections'))
+        except (TypeError, ValueError):
+            misc_selections = {}
 
     if amount is None or amount <= 0:
         return error_response('Valid amount is required', 400)
@@ -245,12 +256,23 @@ def settle_active_timer(timer_id):
     operator = get_operator_name(default='unknown')
     transaction_id = _generate_transaction_id()
 
+    if misc_selections:
+        try:
+            apply_misc_outbound(
+                misc_selections,
+                operator=operator,
+                reason=f'计时结算扣减（客户 {customer.name}（{timer.customer_id}））'
+            )
+        except ValueError as exc:
+            db.session.rollback()
+            return error_response(str(exc), 400)
+
     transaction = Transaction(
         id=transaction_id,
         customer_id=timer.customer_id,
         type='consumption',
         amount=amount,
-        description=description,
+        description=compose_description_with_misc(description, misc_selections),
         operator=operator
     )
 

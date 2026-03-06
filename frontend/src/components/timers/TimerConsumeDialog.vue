@@ -22,6 +22,10 @@ const props = defineProps({
   customerOptions: {
     type: Array,
     default: () => []
+  },
+  enabledMiscItems: {
+    type: Array,
+    default: () => []
   }
 })
 
@@ -32,6 +36,7 @@ const packagePlanOptions = computed(() => getTimerPackagePlanOptions(props.model
 const tableAreaOptions = TABLE_AREA_OPTIONS
 const tableSeatOptions = TABLE_SEAT_OPTIONS
 const showSecondSeat = computed(() => isDoublePackagePlan(props.modelValue?.packagePlan))
+const hasMiscItems = computed(() => props.enabledMiscItems.length > 0)
 
 function patchForm(patch = {}) {
   emit('update:modelValue', {
@@ -54,6 +59,45 @@ function updateNumberField(field, value) {
   const parsed = Number(value)
   patchForm({
     [field]: Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
+  })
+}
+
+function createMiscSelectionMap(seed = {}) {
+  const source = seed && typeof seed === 'object' ? seed : {}
+  const nextMap = {}
+  props.enabledMiscItems.forEach((item) => {
+    const current = Number(source[item.id])
+    const available = getMiscAvailableQuantity(item)
+    const normalized = Number.isFinite(current) && current >= 0 ? Math.floor(current) : 0
+    nextMap[item.id] = Math.min(available, normalized)
+  })
+  return nextMap
+}
+
+function getMiscAvailableQuantity(item) {
+  return Math.max(0, Math.floor(Number(item?.current_stock) || 0))
+}
+
+function formatMiscStock(item) {
+  return `${getMiscAvailableQuantity(item)}${item?.unit_label || '个'}`
+}
+
+function updateMiscSelection(itemId, value) {
+  if (!itemId) return
+  const currentMap = createMiscSelectionMap(props.modelValue?.miscSelections)
+  const item = props.enabledMiscItems.find((entry) => String(entry?.id) === String(itemId))
+  const available = getMiscAvailableQuantity(item)
+  const parsed = Number(value)
+  const normalized = Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0
+  currentMap[itemId] = Math.min(available, normalized)
+  patchForm({
+    miscSelections: currentMap
+  })
+}
+
+function resetMiscSelections() {
+  patchForm({
+    miscSelections: createMiscSelectionMap({})
   })
 }
 
@@ -267,6 +311,39 @@ defineExpose({
           @input="updateNumberField('extraLargeImages', $event.target.value)"
         />
       </div>
+    </div>
+
+    <div v-if="hasMiscItems" class="space-y-3">
+      <div class="flex items-center justify-between">
+        <h4 class="text-sm font-medium text-gray-700">杂项计费（仅整数）</h4>
+        <button
+          type="button"
+          class="text-xs text-blue-600 hover:text-blue-700"
+          @click="resetMiscSelections"
+        >
+          一键清零
+        </button>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div v-for="item in enabledMiscItems" :key="item.id">
+          <label class="block text-sm font-medium text-gray-700 mb-1">
+            {{ item.name }}（¥{{ Number(item.unit_price || 0).toFixed(2) }}/{{ item.unit_label || '个' }}）
+          </label>
+          <p class="text-xs text-slate-500 mb-1">可用库存：{{ formatMiscStock(item) }}</p>
+          <input
+            :value="modelValue.miscSelections?.[item.id] ?? 0"
+            type="number"
+            min="0"
+            :max="getMiscAvailableQuantity(item)"
+            step="1"
+            class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            @input="updateMiscSelection(item.id, $event.target.value)"
+          />
+        </div>
+      </div>
+      <p v-if="errors.misc" class="text-red-500 text-xs mt-1">
+        {{ errors.misc }}
+      </p>
     </div>
 
     <div>

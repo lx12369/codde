@@ -43,6 +43,7 @@ const showSettleModal = ref(false)
 const showLivingRoomModal = ref(false)
 const showSmallRoomModal = ref(false)
 const showGardenModal = ref(false)
+const showUpstairsModal = ref(false)
 const restoreRoomAfterAddModal = ref('')
 const warningQueue = ref([])
 const activeWarning = ref(null)
@@ -92,6 +93,7 @@ const settleForm = reactive({
   largeImages: 0,
   extraSmallImages: 0,
   extraLargeImages: 0,
+  miscSelections: {},
   additionalFee: 0,
   notes: '',
   meituanCustomer: false,
@@ -111,7 +113,8 @@ const editForm = reactive({
   notes: '',
   largeImages: 0,
   extraSmallImages: 0,
-  extraLargeImages: 0
+  extraLargeImages: 0,
+  miscSelections: {}
 })
 
 const addErrors = ref({})
@@ -161,6 +164,9 @@ const GARDEN_LAYOUT_TABLES = [
   { area: 'K', seatCount: 6, seatColumns: 3, shape: 'square' },
   { area: 'L', seatCount: 4, seatColumns: 2, shape: 'square' }
 ]
+const UPSTAIRS_LAYOUT_TABLES = [
+  { area: 'M', seatCount: 3, seatColumns: 3, shape: 'wide' }
+]
 
 const weekdayTypeOptions = [
   { value: 'singleUnlimited', label: '单人不限时不限板' },
@@ -173,6 +179,24 @@ const weekendTypeOptions = [
   { value: 'doubleUnlimited', label: '双人不限时不限板' },
   { value: 'singleLimited', label: '单人不限时限板' }
 ]
+
+const enabledMiscItems = computed(() => {
+  const source = Array.isArray(billingRules.value?.misc?.items) ? billingRules.value.misc.items : []
+  return source
+    .filter((item) => item && item.enabled)
+    .map((item) => ({
+      ...item,
+      current_stock: Math.max(0, Number(item.current_stock) || 0),
+      safe_stock: Math.max(0, Number(item.safe_stock) || 0),
+      unit_label: String(item.unit_label || '个')
+    }))
+    .sort((left, right) => {
+      const leftOrder = Number(left.sort_order || 0)
+      const rightOrder = Number(right.sort_order || 0)
+      if (leftOrder !== rightOrder) return leftOrder - rightOrder
+      return String(left.name || '').localeCompare(String(right.name || ''), 'zh-CN')
+    })
+})
 
 const addPackagePlanOptionsByType = sharedTimerPackagePlanOptionsByType
 
@@ -342,6 +366,7 @@ const settlePreview = computed(() =>
       largeImages: settleForm.largeImages,
       extraSmallImages: settleForm.extraSmallImages,
       extraLargeImages: settleForm.extraLargeImages,
+      miscSelections: settleForm.miscSelections,
       additionalFee: settleTotalAdditionalFee.value
     },
     billingRules.value
@@ -389,6 +414,7 @@ const settleExtraOvertimeFee = computed(() =>
 const settleExtraConsumption = computed(() =>
   settleExtraOvertimeFee.value +
   (Number(settlePreview.value.materialFee) || 0) +
+  (Number(settlePreview.value.miscFee) || 0) +
   (Number(settlePreview.value.additionalFee) || 0)
 )
 
@@ -618,6 +644,7 @@ function buildSeatLayoutTables(layoutTables = []) {
 const seatLayoutTables = computed(() => buildSeatLayoutTables(LIVING_ROOM_LAYOUT_TABLES))
 const smallRoomSeatLayoutTables = computed(() => buildSeatLayoutTables(SMALL_ROOM_LAYOUT_TABLES))
 const gardenSeatLayoutTables = computed(() => buildSeatLayoutTables(GARDEN_LAYOUT_TABLES))
+const upstairsSeatLayoutTables = computed(() => buildSeatLayoutTables(UPSTAIRS_LAYOUT_TABLES))
 
 const livingRoomSeatSummary = computed(() => {
   const totals = seatLayoutTables.value.reduce((acc, table) => {
@@ -660,6 +687,44 @@ const gardenSeatSummary = computed(() => {
     available: Math.max(0, totals.total - totals.occupied)
   }
 })
+
+const upstairsSeatSummary = computed(() => {
+  const totals = upstairsSeatLayoutTables.value.reduce((acc, table) => {
+    acc.total += Number(table.seatCount) || 0
+    acc.occupied += Number(table.occupiedCount) || 0
+    return acc
+  }, { total: 0, occupied: 0 })
+
+  return {
+    total: totals.total,
+    occupied: totals.occupied,
+    available: Math.max(0, totals.total - totals.occupied)
+  }
+})
+
+function getUpstairsSeatGridPositionClass(seatNo) {
+  const normalizedSeat = String(seatNo || '').trim()
+  if (normalizedSeat === '1') return 'col-start-1 row-start-2'
+  if (normalizedSeat === '2') return 'col-start-3 row-start-2'
+  if (normalizedSeat === '3') return 'col-start-2 row-start-3'
+  return 'col-start-2 row-start-2'
+}
+
+function isGardenKTable(tableArea) {
+  return String(tableArea || '').trim().toUpperCase() === 'K'
+}
+
+function getGardenSeatGridPositionClass(tableArea, seatNo) {
+  if (!isGardenKTable(tableArea)) return ''
+  const normalizedSeat = String(seatNo || '').trim()
+  if (normalizedSeat === '1') return 'col-start-2 row-start-1'
+  if (normalizedSeat === '2') return 'col-start-3 row-start-1'
+  if (normalizedSeat === '3') return 'col-start-1 row-start-2'
+  if (normalizedSeat === '4') return 'col-start-1 row-start-3'
+  if (normalizedSeat === '5') return 'col-start-4 row-start-2'
+  if (normalizedSeat === '6') return 'col-start-4 row-start-3'
+  return 'col-start-2 row-start-2'
+}
 
 function isTableNoOccupied(tableNo, excludeTimerId = '') {
   const normalized = normalizeTableNo(tableNo)
@@ -893,13 +958,29 @@ function toServerDateTimestamp(dateTime) {
   return new Date(normalized).getTime()
 }
 
+function normalizeStoredMiscSelections(rawMiscSelections) {
+  if (!rawMiscSelections || typeof rawMiscSelections !== 'object') return {}
+
+  const normalized = {}
+  Object.entries(rawMiscSelections).forEach(([rawId, rawValue]) => {
+    const id = String(rawId || '').trim()
+    if (!id) return
+
+    const amount = Number(rawValue)
+    if (!Number.isFinite(amount) || amount < 0) return
+
+    normalized[id] = Math.floor(amount)
+  })
+  return normalized
+}
+
 function parseTimerNotes(rawNotes) {
   if (!rawNotes) {
-      return {
-        note: '',
-        packagePlan: '',
-        secondTableNo: '',
-        meituanCustomer: false,
+    return {
+      note: '',
+      packagePlan: '',
+      secondTableNo: '',
+      meituanCustomer: false,
       meituanPackageBaseFee: 0,
       timing: {
         elapsedSeconds: 0,
@@ -909,7 +990,8 @@ function parseTimerNotes(rawNotes) {
         largeImages: 0,
         extraSmallImages: 0,
         extraLargeImages: 0
-      }
+      },
+      miscSelections: {}
     }
   }
 
@@ -930,7 +1012,8 @@ function parseTimerNotes(rawNotes) {
           largeImages: Number(parsed.materials?.largeImages) || 0,
           extraSmallImages: Number(parsed.materials?.extraSmallImages) || 0,
           extraLargeImages: Number(parsed.materials?.extraLargeImages) || 0
-        }
+        },
+        miscSelections: normalizeStoredMiscSelections(parsed.miscSelections)
       }
     }
   } catch {
@@ -951,7 +1034,8 @@ function parseTimerNotes(rawNotes) {
       largeImages: 0,
       extraSmallImages: 0,
       extraLargeImages: 0
-    }
+    },
+    miscSelections: {}
   }
 }
 
@@ -987,7 +1071,8 @@ function normalizeTimer(timer = {}) {
     meituanCustomer: Boolean(parsedNotes.meituanCustomer),
     meituanPackageBaseFee: Number(parsedNotes.meituanPackageBaseFee) || 0,
     timing,
-    materials: parsedNotes.materials
+    materials: parsedNotes.materials,
+    miscSelections: normalizeStoredMiscSelections(parsedNotes.miscSelections)
   }
 }
 
@@ -997,7 +1082,68 @@ function toNonNegativeInteger(value) {
   return Math.floor(n)
 }
 
-function buildTimerNotesPayload(timer, materials) {
+function createMiscSelectionMap(seed = {}) {
+  const source = seed && typeof seed === 'object' ? seed : {}
+  const result = {}
+  enabledMiscItems.value.forEach((item) => {
+    const current = Number(source[item.id])
+    const available = getMiscAvailableQuantity(item)
+    const normalized = Number.isFinite(current) && current >= 0 ? Math.floor(current) : 0
+    result[item.id] = Math.min(available, normalized)
+  })
+  return result
+}
+
+function getMiscAvailableQuantity(item) {
+  return Math.max(0, Math.floor(Number(item?.current_stock) || 0))
+}
+
+function formatMiscStock(item) {
+  return `${getMiscAvailableQuantity(item)}${item?.unit_label || '个'}`
+}
+
+function clampMiscSelection(selectionMap, item) {
+  if (!selectionMap || !item?.id) return
+  const available = getMiscAvailableQuantity(item)
+  const current = Number(selectionMap[item.id])
+  const normalized = Number.isFinite(current) && current >= 0 ? Math.floor(current) : 0
+  selectionMap[item.id] = Math.min(available, normalized)
+}
+
+function syncSettleMiscSelections(seed = null) {
+  const source = seed !== null ? seed : settleForm.miscSelections
+  settleForm.miscSelections = createMiscSelectionMap(source)
+}
+
+function syncAddMiscSelections(seed = null) {
+  const source = seed !== null ? seed : addForm.miscSelections
+  addForm.miscSelections = createMiscSelectionMap(source)
+}
+
+function syncEditMiscSelections(seed = null) {
+  const source = seed !== null ? seed : editForm.miscSelections
+  editForm.miscSelections = createMiscSelectionMap(source)
+}
+
+function collectMiscSelectionErrors(selectionMap = {}) {
+  const errors = []
+  enabledMiscItems.value.forEach((item) => {
+    const raw = selectionMap[item.id]
+    if (raw === '' || raw === null || raw === undefined) return
+    const count = Number(raw)
+    if (!Number.isFinite(count) || count < 0 || !Number.isInteger(count)) {
+      errors.push(`${item.name}数量必须为非负整数`)
+      return
+    }
+    if (count > getMiscAvailableQuantity(item)) {
+      errors.push(`${item.name}库存不足（可用 ${formatMiscStock(item)}）`)
+    }
+  })
+  return errors
+}
+
+function buildTimerNotesPayload(timer, materials, miscSelections = null) {
+  const sourceMiscSelections = miscSelections === null ? timer?.miscSelections : miscSelections
   return JSON.stringify({
     note: timer?.notes || '',
     packagePlan: timer?.packagePlan || '',
@@ -1012,7 +1158,8 @@ function buildTimerNotesPayload(timer, materials) {
       largeImages: Number(materials?.largeImages) || 0,
       extraSmallImages: Number(materials?.extraSmallImages) || 0,
       extraLargeImages: Number(materials?.extraLargeImages) || 0
-    }
+    },
+    miscSelections: normalizeStoredMiscSelections(sourceMiscSelections)
   })
 }
 
@@ -1105,9 +1252,15 @@ async function fetchBillingRules() {
     const response = await api.get('/billing-rules')
     const payload = unwrapData(response, {})
     billingRules.value = normalizeBillingRules(payload)
+    syncSettleMiscSelections()
+    syncAddMiscSelections()
+    syncEditMiscSelections()
   } catch (error) {
     console.error('获取计费规则失败:', error)
     billingRules.value = normalizeBillingRules()
+    syncSettleMiscSelections()
+    syncAddMiscSelections()
+    syncEditMiscSelections()
   }
 }
 
@@ -1129,6 +1282,7 @@ async function fetchTimers() {
 
 function resetAddForm() {
   Object.assign(addForm, createTimerConsumeForm())
+  syncAddMiscSelections({})
   addErrors.value = {}
 }
 
@@ -1182,6 +1336,7 @@ function resetEditForm(timer = null) {
   editForm.largeImages = Number(timer?.materials?.largeImages) || 0
   editForm.extraSmallImages = Number(timer?.materials?.extraSmallImages) || 0
   editForm.extraLargeImages = Number(timer?.materials?.extraLargeImages) || 0
+  syncEditMiscSelections(timer?.miscSelections || {})
   editErrors.value = {}
 }
 
@@ -1199,6 +1354,7 @@ function resetSettleForm(timer = null) {
   settleForm.largeImages = Number(timer?.materials?.largeImages) || 0
   settleForm.extraSmallImages = Number(timer?.materials?.extraSmallImages) || 0
   settleForm.extraLargeImages = Number(timer?.materials?.extraLargeImages) || 0
+  syncSettleMiscSelections(timer?.miscSelections || {})
   settleForm.additionalFee = 0
   settleForm.notes = timer?.notes || ''
   settleForm.meituanCustomer = Boolean(
@@ -1221,6 +1377,9 @@ async function openAddModal() {
   } else if (showGardenModal.value) {
     restoreRoomAfterAddModal.value = 'garden'
     closeGardenModal()
+  } else if (showUpstairsModal.value) {
+    restoreRoomAfterAddModal.value = 'upstairs'
+    closeUpstairsModal()
   } else {
     restoreRoomAfterAddModal.value = ''
   }
@@ -1254,6 +1413,14 @@ function openGardenModal() {
 
 function closeGardenModal() {
   showGardenModal.value = false
+}
+
+function openUpstairsModal() {
+  showUpstairsModal.value = true
+}
+
+function closeUpstairsModal() {
+  showUpstairsModal.value = false
 }
 
 async function openAddModalForSeat(tableArea, seatNo, occupied = false) {
@@ -1343,6 +1510,8 @@ function closeAddModal(force = false) {
     showSmallRoomModal.value = true
   } else if (restoreRoomAfterAddModal.value === 'garden') {
     showGardenModal.value = true
+  } else if (restoreRoomAfterAddModal.value === 'upstairs') {
+    showUpstairsModal.value = true
   }
   addErrors.value = {}
   addCurrentBalance.value = null
@@ -1401,6 +1570,11 @@ function validateAddForm() {
     }
   }
 
+  const miscErrors = collectMiscSelectionErrors(addForm.miscSelections)
+  if (miscErrors.length > 0) {
+    errors.misc = miscErrors[0]
+  }
+
   addErrors.value = errors
   return isValid && Object.keys(errors).length === 0
 }
@@ -1443,6 +1617,11 @@ function validateEditForm() {
   if (extraSmallImages === null) errors.extraSmallImages = '超量小图必须大于或等于 0'
   if (extraLargeImages === null) errors.extraLargeImages = '超量大图必须大于或等于 0'
 
+  const miscErrors = collectMiscSelectionErrors(editForm.miscSelections)
+  if (miscErrors.length > 0) {
+    errors.misc = miscErrors[0]
+  }
+
   editErrors.value = errors
 
   if (Object.keys(errors).length > 0) return null
@@ -1454,7 +1633,8 @@ function validateEditForm() {
     notes: String(editForm.notes || '').trim(),
     largeImages,
     extraSmallImages,
-    extraLargeImages
+    extraLargeImages,
+    miscSelections: createMiscSelectionMap(editForm.miscSelections)
   }
 }
 
@@ -1486,6 +1666,11 @@ function validateSettleForm() {
 
   if (settleFinalAmount.value <= 0) {
     errors.total = '结算金额必须大于 0'
+  }
+
+  const miscErrors = collectMiscSelectionErrors(settleForm.miscSelections)
+  if (miscErrors.length > 0) {
+    errors.misc = miscErrors[0]
   }
 
   settleErrors.value = errors
@@ -1525,7 +1710,8 @@ async function saveTimerMaterials() {
         packagePlan: materials.packagePlan,
         secondTableNo: materials.secondTableNo
       },
-      materials
+      materials,
+      materials.miscSelections
     )
 
     await api.put(`/active-timers/${editingTimer.value.id}`, {
@@ -1584,11 +1770,13 @@ async function submitSettlement() {
       settlePreview.value,
       settleNotes
     )
+    const miscSelections = createMiscSelectionMap(settleForm.miscSelections)
 
     await api.post(`/active-timers/${selectedTimer.value.id}/settle`, {
       amount: settleFinalAmount.value,
       description,
-      notes: settleNotes
+      notes: settleNotes,
+      misc_selections: miscSelections
     })
 
     closeSettleModal()
@@ -1642,7 +1830,8 @@ async function toggleTimerPause(timer) {
         ...timer,
         timing: nextTiming
       },
-      timer.materials
+      timer.materials,
+      timer.miscSelections
     )
 
     await api.put(`/active-timers/${timer.id}`, {
@@ -1700,6 +1889,7 @@ watch(
   ],
   ([visible]) => {
     if (!visible || !selectedTimer.value) return
+    syncSettleMiscSelections()
     applyRecommendedSettlementPlan()
   },
   { deep: true }
@@ -1732,6 +1922,12 @@ function handleGlobalKeydown(event) {
   if (showGardenModal.value) {
     event.preventDefault()
     closeGardenModal()
+    return
+  }
+
+  if (showUpstairsModal.value) {
+    event.preventDefault()
+    closeUpstairsModal()
     return
   }
 
@@ -1841,15 +2037,7 @@ onUnmounted(() => {
     </Teleport>
 
     <div class="management-surface p-4">
-      <div class="mb-3 flex justify-end">
-        <button
-          @click="testSpeakerBroadcast"
-          class="inline-flex items-center px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
-        >
-          测试播报
-        </button>
-      </div>
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <div class="grid grid-cols-1 md:grid-cols-[minmax(220px,2fr)_minmax(160px,1fr)_minmax(200px,1.2fr)_auto] gap-3 items-end">
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1">关键词</label>
           <input
@@ -1883,20 +2071,20 @@ onUnmounted(() => {
             </option>
           </select>
         </div>
-      </div>
-      <div class="mt-3 flex justify-end">
-        <button
-          @click="resetFilters"
-          :disabled="!hasActiveFilters"
-          class="px-3 py-1.5 border border-gray-300 text-sm text-gray-700 rounded-lg hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          重置筛选
-        </button>
+        <div class="md:justify-self-end">
+          <button
+            @click="resetFilters"
+            :disabled="!hasActiveFilters"
+            class="w-full md:w-auto px-3 py-2 border border-gray-300 text-sm text-gray-700 rounded-lg hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            重置筛选
+          </button>
+        </div>
       </div>
     </div>
 
     <section class="management-surface p-4 sm:p-5">
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
         <button
           type="button"
           @click="openLivingRoomModal"
@@ -1945,6 +2133,23 @@ onUnmounted(() => {
               <p class="text-xs text-slate-500">总座位 {{ gardenSeatSummary.total }}</p>
               <p class="text-sm font-semibold text-emerald-700">剩余 {{ gardenSeatSummary.available }}</p>
               <p class="text-sm font-semibold text-rose-700">占用 {{ gardenSeatSummary.occupied }}</p>
+            </div>
+          </div>
+        </button>
+        <button
+          type="button"
+          @click="openUpstairsModal"
+          class="w-full rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 via-yellow-50 to-orange-50 p-4 text-left hover:border-amber-300 hover:shadow-md transition"
+        >
+          <div class="flex items-center justify-between">
+            <div>
+              <p class="text-base font-bold text-slate-900">楼上座位分布</p>
+              <p class="text-xs text-slate-600 mt-1">点击查看楼上座位图（右键选第一座位，左键选第二座位）</p>
+            </div>
+            <div class="text-right">
+              <p class="text-xs text-slate-500">总座位 {{ upstairsSeatSummary.total }}</p>
+              <p class="text-sm font-semibold text-emerald-700">剩余 {{ upstairsSeatSummary.available }}</p>
+              <p class="text-sm font-semibold text-rose-700">占用 {{ upstairsSeatSummary.occupied }}</p>
             </div>
           </div>
         </button>
@@ -2185,12 +2390,22 @@ onUnmounted(() => {
                 <div
                   :class="[
                     'mx-auto rounded-2xl border-2 border-slate-300 bg-gradient-to-b from-slate-100 to-slate-200 px-3 py-3 shadow-inner',
-                    table.shape === 'square' ? 'max-w-[180px]' : table.shape === 'tall' ? 'max-w-[140px]' : 'max-w-[240px]'
+                    table.area === 'K'
+                      ? 'max-w-[220px]'
+                      : table.shape === 'square'
+                        ? 'max-w-[180px]'
+                        : table.shape === 'tall'
+                          ? 'max-w-[140px]'
+                          : 'max-w-[240px]'
                   ]"
                 >
                   <div
-                    class="grid gap-2"
-                    :style="{ gridTemplateColumns: `repeat(${table.seatColumns || 3}, minmax(0, 1fr))` }"
+                    :class="[
+                      isGardenKTable(table.area)
+                        ? 'grid grid-cols-4 grid-rows-3 gap-1.5 h-[126px] items-center justify-items-center'
+                        : 'grid gap-2'
+                    ]"
+                    :style="isGardenKTable(table.area) ? undefined : { gridTemplateColumns: `repeat(${table.seatColumns || 3}, minmax(0, 1fr))` }"
                   >
                     <button
                       v-for="seat in table.seats"
@@ -2199,7 +2414,9 @@ onUnmounted(() => {
                       @click="handleSeatLeftClick(table.area, seat.seatNo, seat.occupied)"
                       @contextmenu.prevent="handleSeatRightClick(table.area, seat.seatNo, seat.occupied)"
                       :class="[
-                        'relative h-10 rounded-lg border flex items-center justify-center text-[12px] font-bold transition-colors',
+                        'relative rounded-lg border flex items-center justify-center text-[12px] font-bold transition-colors',
+                        isGardenKTable(table.area) ? 'h-10 w-10' : 'h-10',
+                        getGardenSeatGridPositionClass(table.area, seat.seatNo),
                         pendingDoubleSeatStart && pendingDoubleSeatStart.tableArea === table.area && pendingDoubleSeatStart.seatNo === seat.seatNo
                           ? 'ring-2 ring-blue-600 ring-offset-2 ring-offset-slate-200'
                           : '',
@@ -2213,6 +2430,99 @@ onUnmounted(() => {
                       <span
                         :class="[
                           'absolute top-1.5 right-1.5 h-2.5 w-2.5 rounded-full',
+                          seat.occupied ? 'bg-rose-200' : 'bg-emerald-500'
+                        ]"
+                      ></span>
+                    </button>
+                  </div>
+                </div>
+                <div class="mt-2 text-xs text-gray-600">
+                  <span v-if="table.occupiedCount > 0">深红座位为占用，浅红座位可开台</span>
+                  <span v-else>全部可开台</span>
+                </div>
+              </article>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div
+        v-if="showUpstairsModal"
+        class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-40 p-4"
+        @mousedown="onBackdropMouseDown('timers-upstairs', $event)"
+        @mouseup="onBackdropMouseUp('timers-upstairs', $event) && closeUpstairsModal()"
+      >
+        <div class="bg-white rounded-xl shadow-xl w-full max-w-5xl max-h-[90vh] overflow-y-auto">
+          <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+            <h3 class="text-lg font-semibold text-gray-800">楼上座位分布</h3>
+            <button
+              @click="closeUpstairsModal"
+              class="text-gray-400 hover:text-gray-600 transition-colors"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <div class="p-4 sm:p-5 bg-gradient-to-br from-slate-50 via-blue-50 to-cyan-50 border border-slate-200 m-4 rounded-xl">
+            <div class="flex items-center justify-between mb-3">
+              <div class="text-xs text-slate-600">座位：红=有人，白=空位</div>
+              <div class="text-xs text-slate-500">剩余 {{ upstairsSeatSummary.available }} / 占用 {{ upstairsSeatSummary.occupied }}</div>
+            </div>
+            <p class="mb-3 text-xs text-slate-600">
+              右键选第一座位，左键选第二座位可快速创建双人套餐；直接左键可创建单座位计时。
+            </p>
+            <p v-if="pendingDoubleSeatStart" class="mb-3 text-xs text-blue-800 font-semibold">
+              已选第一座位：{{ pendingDoubleSeatStart.tableArea }}{{ pendingDoubleSeatStart.seatNo }}（等待左键选择第二座位）
+            </p>
+            <div class="grid grid-cols-1 gap-4">
+              <article
+                v-for="table in upstairsSeatLayoutTables"
+                :key="`upstairs-${table.area}`"
+                :class="[
+                  'rounded-2xl border p-3 shadow-sm transition-all backdrop-blur-sm',
+                  table.occupiedCount > 0 ? 'border-red-300 bg-white' : 'border-emerald-200 bg-white/95'
+                ]"
+              >
+                <div class="flex items-center justify-between mb-2">
+                  <p class="text-sm font-bold text-gray-900">{{ table.area }}桌</p>
+                  <p :class="['text-xs font-semibold px-2 py-0.5 rounded-full', table.occupiedCount > 0 ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700']">
+                    {{ table.occupiedCount > 0 ? `已坐 ${table.occupiedCount}/${table.seatCount}` : '当前全空' }}
+                  </p>
+                </div>
+                <div
+                  :class="[
+                    'mx-auto rounded-2xl border-2 border-slate-300 bg-gradient-to-b from-slate-100 to-slate-200 px-3 py-3 shadow-inner',
+                    table.shape === 'square' ? 'max-w-[180px]' : table.shape === 'tall' ? 'max-w-[140px]' : 'max-w-[210px]'
+                  ]"
+                >
+                  <div
+                    class="grid grid-cols-3 grid-rows-3 gap-1.5 h-[126px] items-center justify-items-center"
+                  >
+                    <button
+                      v-for="seat in table.seats"
+                      :key="`upstairs-${table.area}-${seat.seatNo}`"
+                      type="button"
+                      @click="handleSeatLeftClick(table.area, seat.seatNo, seat.occupied)"
+                      @contextmenu.prevent="handleSeatRightClick(table.area, seat.seatNo, seat.occupied)"
+                      :class="[
+                        'relative h-12 w-12 rounded-lg border flex items-center justify-center text-sm font-bold transition-colors',
+                        getUpstairsSeatGridPositionClass(seat.seatNo),
+                        pendingDoubleSeatStart && pendingDoubleSeatStart.tableArea === table.area && pendingDoubleSeatStart.seatNo === seat.seatNo
+                          ? 'ring-2 ring-blue-600 ring-offset-2 ring-offset-slate-200'
+                          : '',
+                        seat.occupied
+                          ? 'bg-red-600 border-red-700 text-white'
+                          : 'bg-white border-slate-300 text-slate-800 hover:bg-slate-50 cursor-pointer'
+                      ]"
+                      :title="seat.occupied ? `${seat.customerName || '已占用'}（${table.area}${seat.seatNo}）` : `${table.area}${seat.seatNo} 空位`"
+                    >
+                      {{ seat.seatNo }}
+                      <span
+                        :class="[
+                          'absolute top-1 right-1 h-2.5 w-2.5 rounded-full',
                           seat.occupied ? 'bg-rose-200' : 'bg-emerald-500'
                         ]"
                       ></span>
@@ -2355,6 +2665,7 @@ onUnmounted(() => {
               :model-value="addForm"
               :errors="addErrors"
               :customer-options="addTimerCustomerOptions"
+              :enabled-misc-items="enabledMiscItems"
               @update:model-value="applyAddForm"
             />
           </div>
@@ -2500,6 +2811,37 @@ onUnmounted(() => {
                 <p v-if="editErrors.extraLargeImages" class="text-red-500 text-xs mt-1">{{ editErrors.extraLargeImages }}</p>
               </div>
             </div>
+
+            <div v-if="enabledMiscItems.length > 0" class="space-y-3">
+              <div class="flex items-center justify-between">
+                <h4 class="text-sm font-medium text-gray-700">杂项计费（仅整数）</h4>
+                <button
+                  type="button"
+                  class="text-xs text-blue-600 hover:text-blue-700"
+                  @click="syncEditMiscSelections({})"
+                >
+                  一键清零
+                </button>
+              </div>
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div v-for="item in enabledMiscItems" :key="`edit-misc-${item.id}`">
+                  <label class="block text-sm font-medium text-gray-700 mb-1">
+                    {{ item.name }}（¥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
+                  </label>
+                  <p class="text-xs text-slate-500 mb-1">可用库存：{{ formatMiscStock(item) }}</p>
+                  <input
+                    v-model.number="editForm.miscSelections[item.id]"
+                    type="number"
+                    min="0"
+                    :max="getMiscAvailableQuantity(item)"
+                    step="1"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                    @change="clampMiscSelection(editForm.miscSelections, item)"
+                  />
+                </div>
+              </div>
+              <p v-if="editErrors.misc" class="text-red-500 text-xs mt-1">{{ editErrors.misc }}</p>
+            </div>
           </div>
 
           <div class="px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
@@ -2610,6 +2952,36 @@ onUnmounted(() => {
               </div>
             </div>
 
+            <div v-if="enabledMiscItems.length > 0" class="space-y-3">
+              <div class="flex items-center justify-between">
+                <h4 class="text-sm font-medium text-gray-700">杂项计费（仅整数）</h4>
+                <button
+                  type="button"
+                  class="text-xs text-blue-600 hover:text-blue-700"
+                  @click="syncSettleMiscSelections({})"
+                >
+                  一键清零
+                </button>
+              </div>
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div v-for="item in enabledMiscItems" :key="item.id">
+                  <label class="block text-sm font-medium text-gray-700 mb-1">
+                    {{ item.name }}（¥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
+                  </label>
+                  <p class="text-xs text-slate-500 mb-1">可用库存：{{ formatMiscStock(item) }}</p>
+                  <input
+                    v-model.number="settleForm.miscSelections[item.id]"
+                    type="number"
+                    min="0"
+                    :max="getMiscAvailableQuantity(item)"
+                    step="1"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                    @change="clampMiscSelection(settleForm.miscSelections, item)"
+                  />
+                </div>
+              </div>
+            </div>
+
             <div class="flex flex-col gap-2">
               <label class="inline-flex items-center gap-2 text-sm text-gray-700">
                 <input
@@ -2644,6 +3016,7 @@ onUnmounted(() => {
               <p>基础费用：￥{{ formatAmount(settlePreview.baseFee) }}</p>
               <p>超时费用：￥{{ formatAmount(settlePreview.overtimeFee) }}</p>
               <p>素材费用：￥{{ formatAmount(settlePreview.materialFee) }}</p>
+              <p>杂项费用：￥{{ formatAmount(settlePreview.miscFee) }}</p>
               <p>附加费用：￥{{ formatAmount(settleRawAdditionalFee) }}</p>
               <p>加班费用：￥{{ formatAmount(settleOvertimeFee) }}</p>
               <p class="font-semibold text-base">额外消费：￥{{ formatAmount(settleExtraConsumption) }}</p>
@@ -2661,6 +3034,7 @@ onUnmounted(() => {
             </div>
 
             <p v-if="settleErrors.total" class="text-red-500 text-xs">{{ settleErrors.total }}</p>
+            <p v-if="settleErrors.misc" class="text-red-500 text-xs">{{ settleErrors.misc }}</p>
             <p v-if="settleErrors.general" class="text-red-500 text-xs">{{ settleErrors.general }}</p>
           </div>
 

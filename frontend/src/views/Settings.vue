@@ -5,12 +5,19 @@ import api from '@/api'
 const dataStatus = reactive({
   storageLocation: '',
   dataSize: '0 KB',
+  userCount: 0,
+  revokedTokenCount: 0,
   customerCount: 0,
+  balanceCount: 0,
   transactionCount: 0,
+  activityCount: 0,
+  billingRuleCount: 0,
+  activeTimerCount: 0,
   beadMaterialCount: 0,
   beadBalanceCount: 0,
   beadLedgerCount: 0,
-  beadStocktakeCount: 0
+  beadStocktakeCount: 0,
+  logCount: 0
 })
 
 const statusLoading = ref(false)
@@ -41,18 +48,6 @@ const feedbackStyle = computed(() => {
 
 const isAnyActionRunning = computed(() => (
   statusLoading.value || backupLoading.value || restoreLoading.value || clearLoading.value
-))
-
-const statusBadgeText = computed(() => {
-  if (statusLoading.value) return '同步中'
-  if (lastSyncedAt.value) return '已同步'
-  return '待同步'
-})
-
-const statusBadgeStyle = computed(() => (
-  statusLoading.value
-    ? 'border-amber-200 bg-amber-50 text-amber-700'
-    : 'border-emerald-200 bg-emerald-50 text-emerald-700'
 ))
 
 const safeCount = (value) => {
@@ -88,18 +83,60 @@ const overviewCards = computed(() => ([
     tone: 'amber'
   },
   {
+    key: 'userCount',
+    label: '人员账号',
+    value: formatNumber(dataStatus.userCount),
+    helper: '管理员与员工账号',
+    tone: 'sky'
+  },
+  {
+    key: 'revokedTokenCount',
+    label: '失效令牌',
+    value: formatNumber(dataStatus.revokedTokenCount),
+    helper: '登录黑名单记录',
+    tone: 'amber'
+  },
+  {
     key: 'customerCount',
     label: '客户总数',
     value: formatNumber(dataStatus.customerCount),
-    helper: '活跃客户档案',
-    tone: 'sky'
+    helper: '客户档案记录',
+    tone: 'indigo'
+  },
+  {
+    key: 'balanceCount',
+    label: '余额账户',
+    value: formatNumber(dataStatus.balanceCount),
+    helper: '客户余额数据',
+    tone: 'emerald'
   },
   {
     key: 'transactionCount',
     label: '交易记录',
     value: formatNumber(dataStatus.transactionCount),
     helper: '充值与消费流水',
-    tone: 'indigo'
+    tone: 'teal'
+  },
+  {
+    key: 'activityCount',
+    label: '活动档案',
+    value: formatNumber(dataStatus.activityCount),
+    helper: '活动配置记录',
+    tone: 'violet'
+  },
+  {
+    key: 'billingRuleCount',
+    label: '计费规则',
+    value: formatNumber(dataStatus.billingRuleCount),
+    helper: '价格与计费策略',
+    tone: 'rose'
+  },
+  {
+    key: 'activeTimerCount',
+    label: '活跃计时',
+    value: formatNumber(dataStatus.activeTimerCount),
+    helper: '进行中的计时项目',
+    tone: 'sky'
   },
   {
     key: 'beadMaterialCount',
@@ -128,8 +165,52 @@ const overviewCards = computed(() => ([
     value: formatNumber(dataStatus.beadStocktakeCount),
     helper: '盘点校准历史',
     tone: 'rose'
+  },
+  {
+    key: 'logCount',
+    label: '系统日志',
+    value: formatNumber(dataStatus.logCount),
+    helper: '全模块操作日志',
+    tone: 'slate'
   }
 ]))
+
+const overviewGroupConfig = [
+  {
+    key: 'operations',
+    title: '经营核心',
+    description: '围绕人员、客户、交易与计费的主业务数据。',
+    cardKeys: ['userCount', 'customerCount', 'balanceCount', 'transactionCount', 'activityCount', 'billingRuleCount', 'activeTimerCount']
+  },
+  {
+    key: 'inventory',
+    title: '豆仓体系',
+    description: '豆料档案、库存余额与流水盘点的仓储链路。',
+    cardKeys: ['beadMaterialCount', 'beadBalanceCount', 'beadLedgerCount', 'beadStocktakeCount']
+  },
+  {
+    key: 'infra',
+    title: '系统基建',
+    description: '存储容量、日志审计与会话黑名单状态。',
+    cardKeys: ['storageLocation', 'dataSize', 'logCount', 'revokedTokenCount']
+  }
+]
+
+const overviewCardMap = computed(() => (
+  overviewCards.value.reduce((acc, card) => {
+    acc[card.key] = card
+    return acc
+  }, {})
+))
+
+const overviewGroups = computed(() => (
+  overviewGroupConfig.map((group) => ({
+    ...group,
+    cards: group.cardKeys
+      .map((cardKey) => overviewCardMap.value[cardKey])
+      .filter(Boolean)
+  }))
+))
 
 const formatDateTime = (date) => {
   if (!(date instanceof Date)) return ''
@@ -163,12 +244,19 @@ const showFeedback = (tone, message) => {
 const resetDataStatus = () => {
   dataStatus.storageLocation = '本地数据库（路径未知）'
   dataStatus.dataSize = '0 KB'
+  dataStatus.userCount = 0
+  dataStatus.revokedTokenCount = 0
   dataStatus.customerCount = 0
+  dataStatus.balanceCount = 0
   dataStatus.transactionCount = 0
+  dataStatus.activityCount = 0
+  dataStatus.billingRuleCount = 0
+  dataStatus.activeTimerCount = 0
   dataStatus.beadMaterialCount = 0
   dataStatus.beadBalanceCount = 0
   dataStatus.beadLedgerCount = 0
   dataStatus.beadStocktakeCount = 0
+  dataStatus.logCount = 0
 }
 
 const fetchDataStatus = async ({ withFeedback = false } = {}) => {
@@ -180,12 +268,19 @@ const fetchDataStatus = async ({ withFeedback = false } = {}) => {
 
     dataStatus.storageLocation = storageInfo.storageLocation || storageInfo.databaseUri || '本地数据库（路径未知）'
     dataStatus.dataSize = formatFileSize(storageInfo.dataSizeBytes)
+    dataStatus.userCount = safeCount(dataCounts.users)
+    dataStatus.revokedTokenCount = safeCount(dataCounts.revoked_tokens)
     dataStatus.customerCount = safeCount(dataCounts.customers)
+    dataStatus.balanceCount = safeCount(dataCounts.balances)
     dataStatus.transactionCount = safeCount(dataCounts.transactions)
+    dataStatus.activityCount = safeCount(dataCounts.activities)
+    dataStatus.billingRuleCount = safeCount(dataCounts.billing_rules)
+    dataStatus.activeTimerCount = safeCount(dataCounts.active_timers)
     dataStatus.beadMaterialCount = safeCount(dataCounts.bead_materials)
     dataStatus.beadBalanceCount = safeCount(dataCounts.bead_inventory_balances)
     dataStatus.beadLedgerCount = safeCount(dataCounts.bead_inventory_ledgers)
     dataStatus.beadStocktakeCount = safeCount(dataCounts.bead_stocktakes)
+    dataStatus.logCount = safeCount(dataCounts.logs)
     lastSyncedAt.value = formatDateTime(new Date())
 
     if (withFeedback) {
@@ -312,35 +407,19 @@ onUnmounted(() => {
 
 <template>
   <div class="settings-page space-y-6">
-    <section class="settings-hero rounded-3xl p-6 sm:p-8">
-      <div class="settings-hero__veil" aria-hidden="true"></div>
+    <section class="page-hero rounded-3xl p-6 sm:p-8">
       <div class="relative z-10 flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-        <div class="max-w-3xl space-y-4">
+        <div class="space-y-2">
           <p class="page-hero__eyebrow">Data Control Center</p>
           <h1 class="page-hero__title">数据管理</h1>
-          <p class="settings-hero__subtitle">
-            统一维护系统备份、恢复与清理流程。所有高风险动作建议先执行备份并确认当前状态。
-          </p>
-          <div class="settings-hero__meta flex flex-wrap items-center gap-2">
-            <span
-              :class="[
-                'inline-flex items-center rounded-full border px-3 py-1 text-xs sm:text-sm font-semibold',
-                statusBadgeStyle
-              ]"
-            >
-              {{ statusBadgeText }}
-            </span>
-            <span class="inline-flex items-center rounded-full border border-slate-200 bg-white/75 px-3 py-1 text-xs sm:text-sm font-medium text-slate-700">
-              最近同步：{{ lastSyncedAt || '尚未刷新' }}
-            </span>
-          </div>
+          <p class="page-hero__meta">最近更新：{{ lastSyncedAt || '尚未刷新' }}</p>
         </div>
 
         <button
           type="button"
           :disabled="isAnyActionRunning"
           @click="fetchDataStatus({ withFeedback: true })"
-          class="page-hero__action settings-hero__action"
+          class="page-hero__action"
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -372,108 +451,125 @@ onUnmounted(() => {
       </div>
     </Transition>
 
-    <section class="panel-surface rounded-3xl border border-slate-200/80 p-5 sm:p-6 lg:p-8 space-y-8 shadow-sm">
-      <div class="settings-bento grid grid-cols-1 gap-5 xl:grid-cols-[1.45fr_minmax(0,1fr)]">
-        <section class="overview-panel rounded-2xl border border-sky-100 bg-gradient-to-b from-white via-white to-sky-50/80 p-5 sm:p-6">
+    <section class="settings-shell">
+      <section class="panel-surface settings-map rounded-3xl border p-5 sm:p-6 lg:p-8">
+        <div class="settings-map__head">
           <div>
-            <h2 class="text-lg sm:text-xl font-bold text-slate-900">状态总览</h2>
-            <p class="mt-1 text-sm text-slate-500">
-              数据快照用于评估系统体量与恢复风险，建议操作前先刷新状态。
-            </p>
+            <p class="settings-map__eyebrow">Data Topology</p>
+            <h2 class="settings-map__title">全域数据版图</h2>
           </div>
-
-          <div class="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2">
-            <article
-              v-for="(card, index) in overviewCards"
-              :key="card.key"
-              :class="['status-card', `status-card--${card.tone}`]"
-              :style="{ animationDelay: `${index * 0.05}s` }"
-            >
-              <p class="status-card__label">{{ card.label }}</p>
-              <p :class="['status-card__value', card.key === 'storageLocation' ? 'break-all' : '']">
-                {{ card.value }}
-              </p>
-              <p class="status-card__helper">{{ card.helper }}</p>
-            </article>
-          </div>
-        </section>
-
-        <section class="operation-panel grid grid-cols-1 gap-5">
-          <article class="action-card action-card--backup">
-            <div class="action-card__head">
-              <h3 class="action-card__title">数据备份</h3>
-              <span class="action-card__tag">推荐先执行</span>
-            </div>
-            <p class="action-card__desc">导出当前系统快照，生成本地 JSON 备份文件。</p>
-            <button
-              type="button"
-              :disabled="isAnyActionRunning"
-              @click="backupData"
-              class="action-btn action-btn--backup"
-            >
-              {{ backupLoading ? '备份中...' : '立即备份到文件' }}
-            </button>
-          </article>
-
-          <article class="action-card action-card--restore">
-            <div class="action-card__head">
-              <h3 class="action-card__title">数据恢复</h3>
-              <span class="action-card__tag">需谨慎</span>
-            </div>
-            <p class="action-card__desc">上传 `.json` 备份文件，将系统恢复到指定快照。</p>
-            <input
-              ref="fileInput"
-              type="file"
-              accept=".json"
-              class="hidden"
-              @change="restoreData"
-            >
-            <button
-              type="button"
-              :disabled="isAnyActionRunning"
-              @click="triggerRestore"
-              class="action-btn action-btn--restore"
-            >
-              {{ restoreLoading ? '恢复中...' : '上传 JSON 并恢复' }}
-            </button>
-          </article>
-
-          <article class="tips-card rounded-2xl border border-indigo-100 bg-indigo-50/70 p-4 text-sm text-indigo-900">
-            <h4 class="font-semibold">操作建议</h4>
-            <p class="mt-2 leading-relaxed text-indigo-800/90">
-              推荐顺序：刷新状态 → 备份数据 → 执行恢复或清理。若状态异常，请先检查网络与权限。
-            </p>
-          </article>
-        </section>
-      </div>
-
-      <section class="danger-zone rounded-2xl border border-rose-200 bg-gradient-to-b from-rose-50 to-white p-5 sm:p-6">
-        <div class="space-y-2">
-          <h3 class="text-lg font-bold text-rose-900">危险操作区</h3>
-          <p class="text-sm text-rose-700/90 leading-relaxed">
-            清空后将删除客户、交易、活动、豆仓与日志等数据。此操作不可撤销，请确认已完成备份。
+          <p class="settings-map__desc">
+            按业务域拆分查看系统数据状态，所有卡片均来自实时刷新结果。
           </p>
         </div>
-        <button
-          type="button"
-          :disabled="isAnyActionRunning"
-          @click="openClearConfirm"
-          class="mt-5 inline-flex w-full items-center justify-center rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:bg-rose-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-600 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
-        >
-          {{ clearLoading ? '清空中...' : '清空所有数据' }}
-        </button>
+
+        <div class="settings-groups">
+          <article
+            v-for="group in overviewGroups"
+            :key="group.key"
+            class="group-panel"
+          >
+            <div class="group-panel__head">
+              <h3 class="group-panel__title">{{ group.title }}</h3>
+              <p class="group-panel__desc">{{ group.description }}</p>
+            </div>
+
+            <div class="group-panel__grid">
+              <article
+                v-for="(card, index) in group.cards"
+                :key="`${group.key}-${card.key}`"
+                :class="['status-card', `status-card--${card.tone}`]"
+                :style="{ animationDelay: `${index * 0.06}s` }"
+              >
+                <p class="status-card__label">{{ card.label }}</p>
+                <p :class="['status-card__value', card.key === 'storageLocation' ? 'break-all' : '']">
+                  {{ card.value }}
+                </p>
+                <p class="status-card__helper">{{ card.helper }}</p>
+              </article>
+            </div>
+          </article>
+        </div>
       </section>
+
+      <aside class="panel-surface settings-command rounded-3xl border p-5 sm:p-6 lg:p-7">
+        <header class="settings-command__head">
+          <p class="settings-command__eyebrow">Action Deck</p>
+          <h2 class="settings-command__title">维护操作台</h2>
+        </header>
+
+        <article class="action-card action-card--backup">
+          <div class="action-card__head">
+            <h3 class="action-card__title">数据备份</h3>
+            <span class="action-card__tag">推荐先执行</span>
+          </div>
+          <p class="action-card__desc">导出当前系统快照，生成本地 JSON 备份文件。</p>
+          <button
+            type="button"
+            :disabled="isAnyActionRunning"
+            @click="backupData"
+            class="action-btn action-btn--backup"
+          >
+            {{ backupLoading ? '备份中...' : '立即备份到文件' }}
+          </button>
+        </article>
+
+        <article class="action-card action-card--restore">
+          <div class="action-card__head">
+            <h3 class="action-card__title">数据恢复</h3>
+            <span class="action-card__tag">需谨慎</span>
+          </div>
+          <p class="action-card__desc">上传 `.json` 备份文件，将系统恢复到指定快照。</p>
+          <input
+            ref="fileInput"
+            type="file"
+            accept=".json"
+            class="hidden"
+            @change="restoreData"
+          >
+          <button
+            type="button"
+            :disabled="isAnyActionRunning"
+            @click="triggerRestore"
+            class="action-btn action-btn--restore"
+          >
+            {{ restoreLoading ? '恢复中...' : '上传 JSON 并恢复' }}
+          </button>
+        </article>
+
+        <article class="tips-card rounded-2xl border p-4 text-sm">
+          <h4 class="font-semibold">安全流程建议</h4>
+          <p class="mt-2">1. 刷新状态，确认数据规模和更新时间。</p>
+          <p class="mt-1">2. 先执行备份，再进行恢复或清空。</p>
+          <p class="mt-1">3. 高风险操作后再次刷新并复核统计。</p>
+        </article>
+
+        <section class="danger-zone rounded-2xl border p-5 sm:p-6">
+          <h3 class="text-lg font-bold text-rose-950">危险操作区</h3>
+          <p class="mt-2 text-sm text-rose-900/85 leading-relaxed">
+            清空后将删除客户、交易、活动、豆仓与日志等数据。此操作不可撤销，请确认已完成备份。
+          </p>
+          <button
+            type="button"
+            :disabled="isAnyActionRunning"
+            @click="openClearConfirm"
+            class="danger-zone__btn mt-5 inline-flex w-full items-center justify-center rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:bg-rose-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-600 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {{ clearLoading ? '清空中...' : '清空所有数据' }}
+          </button>
+        </section>
+      </aside>
     </section>
 
     <Teleport to="body">
       <Transition name="modal-fade">
         <div
           v-if="showClearConfirm"
-          class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-[1px]"
+          class="clear-modal-overlay fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-[1px]"
           @click.self="closeClearConfirm"
         >
           <div
-            class="w-full max-w-lg rounded-2xl bg-white shadow-2xl ring-1 ring-black/5"
+            class="clear-modal w-full max-w-lg rounded-2xl bg-white shadow-2xl ring-1 ring-black/5"
             role="dialog"
             aria-modal="true"
             aria-labelledby="clear-data-title"
@@ -490,7 +586,7 @@ onUnmounted(() => {
                 type="button"
                 :disabled="clearLoading"
                 @click="closeClearConfirm"
-                class="inline-flex items-center justify-center rounded-xl border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
+                class="clear-modal__cancel inline-flex items-center justify-center rounded-xl border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 取消
               </button>
@@ -499,7 +595,7 @@ onUnmounted(() => {
                 type="button"
                 :disabled="clearLoading"
                 @click="clearAllData"
-                class="inline-flex items-center justify-center rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white transition-all hover:bg-rose-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-600 disabled:cursor-not-allowed disabled:opacity-60"
+                class="clear-modal__confirm inline-flex items-center justify-center rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white transition-all hover:bg-rose-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-600 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {{ clearLoading ? '正在清空...' : '确认清空' }}
               </button>
@@ -513,67 +609,192 @@ onUnmounted(() => {
 
 <style scoped>
 .settings-page {
-  font-family: 'Fira Sans', 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
-}
-
-.settings-hero {
+  --ink: #12233f;
+  --muted: #5d6f8a;
+  --panel-border: rgba(18, 35, 63, 0.14);
+  --panel-bg: rgba(255, 255, 255, 0.84);
   position: relative;
-  overflow: hidden;
-  border: 1px solid #dbe7f5;
-  background: linear-gradient(135deg, #f8fbff 0%, #eef6ff 48%, #f9fbff 100%);
+  isolation: isolate;
+  font-family: 'Avenir Next', 'Trebuchet MS', 'PingFang SC', 'Microsoft YaHei UI', sans-serif;
+  color: var(--ink);
 }
 
-.settings-hero__veil {
-  position: absolute;
+.settings-page::before {
+  content: '';
+  position: fixed;
   inset: 0;
+  z-index: -1;
   pointer-events: none;
   background:
-    radial-gradient(circle at 10% 10%, rgba(59, 130, 246, 0.14), transparent 36%),
-    radial-gradient(circle at 92% 82%, rgba(245, 158, 11, 0.12), transparent 33%);
+    radial-gradient(circle at 6% 8%, rgba(14, 116, 144, 0.18), transparent 35%),
+    radial-gradient(circle at 93% 6%, rgba(245, 158, 11, 0.14), transparent 33%),
+    radial-gradient(circle at 72% 90%, rgba(59, 130, 246, 0.12), transparent 28%),
+    linear-gradient(160deg, #edf3ff 0%, #f6faff 42%, #f4fbf5 100%);
 }
 
-.settings-hero__subtitle {
-  max-width: 70ch;
-  color: #334155;
-  font-size: 0.95rem;
-  line-height: 1.65;
-}
-
-.settings-hero__action {
-  min-height: 44px;
+.settings-page::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, rgba(15, 23, 42, 0.022) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(15, 23, 42, 0.022) 1px, transparent 1px);
+  background-size: 28px 28px;
+  opacity: 0.6;
 }
 
 .settings-feedback {
-  backdrop-filter: blur(2px);
+  border-width: 1px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 18px 26px -18px rgba(37, 99, 235, 0.38);
+}
+
+.settings-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
 }
 
 .panel-surface {
-  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  position: relative;
+  overflow: hidden;
+  border-color: var(--panel-border);
+  background: var(--panel-bg);
+  box-shadow:
+    0 24px 36px -30px rgba(15, 23, 42, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.65);
+  backdrop-filter: blur(8px);
 }
 
-.overview-panel {
-  box-shadow: inset 0 0 0 1px rgba(186, 230, 253, 0.36);
+.panel-surface::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(255, 255, 255, 0));
+}
+
+.settings-map,
+.settings-command,
+.group-panel,
+.status-card,
+.action-card,
+.danger-zone {
+  position: relative;
+  z-index: 1;
+}
+
+.settings-map__head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin-bottom: 1rem;
+}
+
+.settings-map__eyebrow {
+  font-size: 0.74rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #1d4ed8;
+  font-weight: 700;
+}
+
+.settings-map__title {
+  font-size: 1.35rem;
+  line-height: 1.2;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.settings-map__desc {
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.6;
+}
+
+.settings-groups {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.group-panel {
+  border: 1px solid rgba(191, 219, 254, 0.6);
+  border-radius: 1rem;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(241, 245, 249, 0.7));
+  padding: 0.95rem;
+}
+
+.group-panel__head {
+  margin-bottom: 0.75rem;
+}
+
+.group-panel__title {
+  font-size: 1rem;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.group-panel__desc {
+  margin-top: 0.25rem;
+  color: #5f708b;
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.group-panel__grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(185px, 1fr));
 }
 
 .status-card {
-  border: 1px solid #dbe7f5;
-  border-radius: 1rem;
+  --card-accent: #64748b;
+  --card-blob: rgba(100, 116, 139, 0.2);
+  border: 1px solid rgba(203, 213, 225, 0.75);
+  border-radius: 0.95rem;
   background: #ffffff;
-  padding: 1rem;
-  min-height: 138px;
-  box-shadow: 0 10px 20px -18px rgba(6, 37, 82, 0.65);
+  padding: 0.9rem 0.88rem 0.84rem;
+  min-height: 120px;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 12px 20px -18px rgba(15, 23, 42, 0.35);
   transition: transform 220ms ease, box-shadow 220ms ease, border-color 220ms ease;
   animation: card-in 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+.status-card::before {
+  content: '';
+  position: absolute;
+  left: 0.95rem;
+  right: 0.95rem;
+  top: 0;
+  height: 3px;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, var(--card-accent), rgba(255, 255, 255, 0));
+}
+
+.status-card::after {
+  content: '';
+  position: absolute;
+  right: -18px;
+  top: -18px;
+  width: 72px;
+  height: 72px;
+  border-radius: 9999px;
+  background: var(--card-blob);
+  opacity: 0.55;
+}
+
 .status-card:hover {
-  transform: translateY(-2px);
-  border-color: #b7d7f5;
-  box-shadow: 0 16px 30px -20px rgba(15, 76, 129, 0.55);
+  transform: translateY(-1px);
+  border-color: #bfdbfe;
+  box-shadow: 0 16px 26px -20px rgba(37, 99, 235, 0.44);
 }
 
 .status-card__label {
-  color: #475569;
+  color: #3c4f71;
   font-size: 0.82rem;
   letter-spacing: 0.02em;
 }
@@ -581,70 +802,135 @@ onUnmounted(() => {
 .status-card__value {
   margin-top: 0.45rem;
   color: #0f172a;
-  font-size: 1.05rem;
+  font-size: 1.02rem;
   font-weight: 700;
-  line-height: 1.4;
+  line-height: 1.42;
 }
 
 .status-card__helper {
-  margin-top: 0.4rem;
+  margin-top: 0.38rem;
   font-size: 0.78rem;
-  color: #64748b;
+  color: #5f708b;
+}
+
+.status-card--slate {
+  --card-accent: #475569;
+  --card-blob: rgba(148, 163, 184, 0.3);
 }
 
 .status-card--amber {
+  --card-accent: #d97706;
+  --card-blob: rgba(245, 158, 11, 0.28);
   border-color: #fde68a;
   background: linear-gradient(180deg, #ffffff 0%, #fffbeb 100%);
 }
 
 .status-card--sky {
+  --card-accent: #0284c7;
+  --card-blob: rgba(14, 165, 233, 0.22);
   border-color: #bae6fd;
   background: linear-gradient(180deg, #ffffff 0%, #f0f9ff 100%);
 }
 
 .status-card--indigo {
+  --card-accent: #4f46e5;
+  --card-blob: rgba(99, 102, 241, 0.2);
   border-color: #c7d2fe;
   background: linear-gradient(180deg, #ffffff 0%, #eef2ff 100%);
 }
 
 .status-card--emerald {
+  --card-accent: #059669;
+  --card-blob: rgba(16, 185, 129, 0.22);
   border-color: #bbf7d0;
   background: linear-gradient(180deg, #ffffff 0%, #f0fdf4 100%);
 }
 
 .status-card--teal {
+  --card-accent: #0f766e;
+  --card-blob: rgba(45, 212, 191, 0.24);
   border-color: #99f6e4;
   background: linear-gradient(180deg, #ffffff 0%, #f0fdfa 100%);
 }
 
 .status-card--violet {
+  --card-accent: #7c3aed;
+  --card-blob: rgba(167, 139, 250, 0.24);
   border-color: #ddd6fe;
   background: linear-gradient(180deg, #ffffff 0%, #f5f3ff 100%);
 }
 
 .status-card--rose {
+  --card-accent: #e11d48;
+  --card-blob: rgba(251, 113, 133, 0.23);
   border-color: #fecdd3;
   background: linear-gradient(180deg, #ffffff 0%, #fff1f2 100%);
 }
 
+.settings-command {
+  display: grid;
+  gap: 0.85rem;
+  align-content: start;
+}
+
+.settings-command__head {
+  margin-bottom: 0.15rem;
+}
+
+.settings-command__eyebrow {
+  font-size: 0.73rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #0f766e;
+  font-weight: 700;
+}
+
+.settings-command__title {
+  margin-top: 0.24rem;
+  font-size: 1.22rem;
+  font-weight: 800;
+  color: #0f172a;
+}
+
 .action-card {
-  border-radius: 1rem;
-  padding: 1.4rem 1.25rem;
+  border-radius: 0.95rem;
+  padding: 1.1rem 1.02rem;
   display: flex;
   flex-direction: column;
   gap: 0.9rem;
   border: 1px solid;
-  box-shadow: 0 8px 20px -16px rgba(15, 23, 42, 0.55);
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 12px 20px -16px rgba(30, 64, 175, 0.34);
+  transition: transform 220ms ease, box-shadow 220ms ease;
+}
+
+.action-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0));
+}
+
+.action-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 18px 26px -18px rgba(30, 64, 175, 0.4);
+}
+
+.action-card > * {
+  position: relative;
+  z-index: 1;
 }
 
 .action-card--backup {
-  background: linear-gradient(180deg, #f0fdf4 0%, #ffffff 88%);
-  border-color: #b7e4c7;
+  background: linear-gradient(155deg, #e9fbf3 0%, #ffffff 86%);
+  border-color: #9fe5bb;
 }
 
 .action-card--restore {
-  background: linear-gradient(180deg, #eff6ff 0%, #ffffff 88%);
-  border-color: #bfdbfe;
+  background: linear-gradient(155deg, #edf5ff 0%, #ffffff 86%);
+  border-color: #bad9ff;
 }
 
 .action-card__title {
@@ -665,7 +951,7 @@ onUnmounted(() => {
   align-items: center;
   border-radius: 9999px;
   border: 1px solid rgba(15, 23, 42, 0.12);
-  background: rgba(255, 255, 255, 0.62);
+  background: rgba(255, 255, 255, 0.72);
   padding: 0.2rem 0.55rem;
   font-size: 0.72rem;
   font-weight: 700;
@@ -680,22 +966,29 @@ onUnmounted(() => {
 }
 
 .tips-card {
-  box-shadow: inset 0 0 0 1px rgba(99, 102, 241, 0.06);
+  border-color: #c7d2fe;
+  background: linear-gradient(180deg, rgba(238, 242, 255, 0.9), rgba(255, 255, 255, 0.82));
+  color: #3730a3;
+  box-shadow:
+    inset 0 0 0 1px rgba(99, 102, 241, 0.08),
+    0 10px 16px -14px rgba(79, 70, 229, 0.38);
 }
 
 .action-btn {
   margin-top: auto;
-  border-radius: 0.8rem;
-  padding: 0.65rem 0.9rem;
+  border-radius: 0.82rem;
+  padding: 0.68rem 0.92rem;
   color: #ffffff;
   font-size: 0.9rem;
   font-weight: 700;
-  transition: transform 180ms ease, filter 180ms ease, opacity 180ms ease;
+  box-shadow: 0 14px 18px -14px rgba(15, 23, 42, 0.58);
+  transition: transform 180ms ease, filter 180ms ease, opacity 180ms ease, box-shadow 180ms ease;
 }
 
 .action-btn:hover:enabled {
   transform: translateY(-1px);
   filter: brightness(1.03);
+  box-shadow: 0 18px 20px -14px rgba(15, 23, 42, 0.56);
 }
 
 .action-btn:disabled {
@@ -714,7 +1007,11 @@ onUnmounted(() => {
 .danger-zone {
   position: relative;
   overflow: hidden;
-  box-shadow: inset 0 0 0 1px rgba(251, 113, 133, 0.14);
+  border-color: #fda4af;
+  background: linear-gradient(180deg, #fff1f2 0%, #ffffff 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(251, 113, 133, 0.16),
+    0 12px 20px -16px rgba(244, 63, 94, 0.33);
 }
 
 .danger-zone::after {
@@ -724,11 +1021,55 @@ onUnmounted(() => {
   pointer-events: none;
   background: repeating-linear-gradient(
     -35deg,
-    rgba(244, 63, 94, 0.05),
-    rgba(244, 63, 94, 0.05) 6px,
+    rgba(244, 63, 94, 0.06),
+    rgba(244, 63, 94, 0.06) 6px,
     transparent 6px,
     transparent 16px
   );
+}
+
+.danger-zone > * {
+  position: relative;
+  z-index: 1;
+}
+
+.danger-zone__btn {
+  box-shadow: 0 12px 20px -14px rgba(225, 29, 72, 0.6);
+}
+
+.danger-zone__btn:hover:enabled {
+  box-shadow: 0 15px 22px -14px rgba(225, 29, 72, 0.56);
+}
+
+.clear-modal-overlay {
+  backdrop-filter: blur(2px);
+  background:
+    radial-gradient(circle at 50% 10%, rgba(244, 63, 94, 0.14), transparent 40%),
+    rgba(15, 23, 42, 0.62);
+}
+
+.clear-modal {
+  border: 1px solid #fecdd3;
+  background: linear-gradient(180deg, #ffffff 0%, #fff5f6 100%);
+  box-shadow: 0 30px 44px -28px rgba(15, 23, 42, 0.72);
+}
+
+.clear-modal__cancel {
+  border-color: #cbd5e1;
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
+}
+
+.clear-modal__cancel:hover:enabled {
+  border-color: #94a3b8;
+  background: #f8fafc;
+}
+
+.clear-modal__confirm {
+  box-shadow: 0 12px 18px -14px rgba(225, 29, 72, 0.62);
+}
+
+.clear-modal__confirm:hover:enabled {
+  box-shadow: 0 16px 20px -14px rgba(225, 29, 72, 0.58);
 }
 
 .notice-enter-active,
@@ -763,15 +1104,35 @@ onUnmounted(() => {
   }
 }
 
-@media (max-width: 420px) {
-  .status-card {
-    min-height: 110px;
+@media (min-width: 1280px) {
+  .settings-shell {
+    grid-template-columns: minmax(0, 1.52fr) minmax(0, 0.92fr);
+    align-items: start;
   }
 
-  .settings-hero__subtitle {
-    font-size: 0.9rem;
+  .settings-command {
+    position: sticky;
+    top: 1.05rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-card {
+    animation: none;
+  }
+
+  .status-card,
+  .action-card,
+  .action-btn,
+  .danger-zone__btn {
+    transition: none;
+  }
+}
+
+@media (max-width: 420px) {
+  .status-card {
+    min-height: 106px;
   }
 }
 </style>
-
 

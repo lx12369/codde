@@ -681,7 +681,7 @@ const menuItems = computed(() => {
     },
     {
       title: '员工管理',
-      icon: 'users',
+      icon: 'user',
       path: '/employees',
       group: 'member'
     },
@@ -701,6 +701,12 @@ const menuItems = computed(() => {
       title: '计费规则',
       icon: 'currency',
       path: '/billing-rules',
+      group: 'operation'
+    },
+    {
+      title: '杂项计费',
+      icon: 'tag',
+      path: '/misc-billing',
       group: 'operation'
     },
     {
@@ -851,6 +857,11 @@ const getIcon = (iconName) => {
     users: `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
     </svg>`,
+    user: `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a2 2 0 012-2h12a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V5z" />
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.5 10a2.5 2.5 0 115 0 2.5 2.5 0 01-5 0z" />
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16a4 4 0 018 0M15.5 8H18M15.5 11H18" />
+    </svg>`,
     receipt: `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 14l6-6m-5.5.5h.01m4.99 5h.01M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16l3.5-2 3.5 2 3.5-2 3.5 2zM10 8.5a.5.5 0 11-1 0 .5.5 0 011 0zm5 5a.5.5 0 11-1 0 .5.5 0 011 0z" />
     </svg>`,
@@ -859,6 +870,9 @@ const getIcon = (iconName) => {
     </svg>`,
     currency: `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>`,
+    tag: `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M3 11l7.586 7.586a2 2 0 002.828 0L21 11.999a2 2 0 000-2.828L13.414 1.586A2 2 0 0012 1H5a2 2 0 00-2 2v8z" />
     </svg>`,
     warehouse: `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10l9-7 9 7M5 10v9a1 1 0 001 1h12a1 1 0 001-1v-9M9 21V12h6v9" />

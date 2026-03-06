@@ -25,6 +25,7 @@ const { onBackdropMouseDown, onBackdropMouseUp } = useBackdropClose()
 
 const loading = ref(false)
 const cancellingTransactionId = ref('')
+const editingTransactionId = ref('')
 const transactions = ref([])
 const customers = ref([])
 const activities = ref([])
@@ -41,11 +42,14 @@ const filterForm = reactive({
 
 const showRechargeDialog = ref(false)
 const showConsumeDialog = ref(false)
+const showTimerEditDialog = ref(false)
 const showDetailDialog = ref(false)
 const showCancelConfirmDialog = ref(false)
 const selectedTransaction = ref(null)
+const timerEditTargetTransaction = ref(null)
 const cancelTargetTransaction = ref(null)
 const cancelConfirmButtonRef = ref(null)
+const timerEditAmountInputRef = ref(null)
 const rechargeCustomerSelectRef = ref(null)
 const manualConsumeCustomerSelectRef = ref(null)
 const detailCloseButtonRef = ref(null)
@@ -65,6 +69,7 @@ const manualConsumeForm = reactive({
   customerId: '',
   amount: '',
   description: '',
+  miscSelections: {},
   meituanCustomer: false
 })
 
@@ -78,17 +83,34 @@ const autoConsumeForm = reactive({
   largeImages: 0,
   extraSmallImages: 0,
   extraLargeImages: 0,
+  miscSelections: {},
   additionalFee: 0,
   notes: '',
   meituanCustomer: false
 })
 
 const timerConsumeForm = reactive(createTimerConsumeForm())
+const timerEditForm = reactive({
+  elapsedMinutes: 60,
+  billingType: 'limited',
+  duration: '1',
+  weekdayType: 'singleUnlimited',
+  weekendType: 'singleUnlimited',
+  overtimeMinutes: 0,
+  largeImages: 0,
+  extraSmallImages: 0,
+  extraLargeImages: 0,
+  miscSelections: {},
+  additionalFee: 0,
+  notes: '',
+  meituanCustomer: false
+})
 
 const rechargeErrors = ref({})
 const manualConsumeErrors = ref({})
 const autoConsumeErrors = ref({})
 const timerConsumeErrors = ref({})
+const timerEditErrors = ref({})
 const feedback = reactive({
   tone: 'info',
   message: ''
@@ -151,6 +173,24 @@ const activeConsumeCustomerId = computed(() => {
   return timerConsumeForm.customerId
 })
 
+const enabledMiscItems = computed(() => {
+  const source = Array.isArray(billingRules.value?.misc?.items) ? billingRules.value.misc.items : []
+  return source
+    .filter((item) => item && item.enabled)
+    .map((item) => ({
+      ...item,
+      current_stock: Math.max(0, Number(item.current_stock) || 0),
+      safe_stock: Math.max(0, Number(item.safe_stock) || 0),
+      unit_label: String(item.unit_label || '个')
+    }))
+    .sort((left, right) => {
+      const leftOrder = Number(left.sort_order || 0)
+      const rightOrder = Number(right.sort_order || 0)
+      if (leftOrder !== rightOrder) return leftOrder - rightOrder
+      return String(left.name || '').localeCompare(String(right.name || ''), 'zh-CN')
+    })
+})
+
 const autoConsumePreview = computed(() =>
   calculateConsumptionAmount(
     {
@@ -162,6 +202,7 @@ const autoConsumePreview = computed(() =>
       largeImages: autoConsumeForm.largeImages,
       extraSmallImages: autoConsumeForm.extraSmallImages,
       extraLargeImages: autoConsumeForm.extraLargeImages,
+      miscSelections: autoConsumeForm.miscSelections,
       additionalFee: autoConsumeForm.additionalFee
     },
     billingRules.value
@@ -173,14 +214,18 @@ const manualInputAmount = computed(() => {
   return Number.isFinite(value) ? Math.max(0, value) : 0
 })
 
+const manualMiscSummary = computed(() => buildMiscChargeSummary(manualConsumeForm.miscSelections))
+const timerMiscSummary = computed(() => buildMiscChargeSummary(timerConsumeForm.miscSelections))
+const manualRawTotal = computed(() => manualInputAmount.value + manualMiscSummary.value.fee)
+
 const manualMeituanDeduction = computed(() => (
   manualConsumeForm.meituanCustomer
-    ? calculateMeituanDeduction(manualInputAmount.value)
+    ? calculateMeituanDeduction(manualRawTotal.value)
     : 0
 ))
 
 const manualFinalAmount = computed(() =>
-  applyDeduction(manualInputAmount.value, manualMeituanDeduction.value)
+  applyDeduction(manualRawTotal.value, manualMeituanDeduction.value)
 )
 
 const autoMeituanDeduction = computed(() => (
@@ -191,6 +236,34 @@ const autoMeituanDeduction = computed(() => (
 
 const autoFinalAmount = computed(() =>
   applyDeduction(autoConsumePreview.value.total, autoMeituanDeduction.value)
+)
+
+const timerEditPreview = computed(() =>
+  calculateConsumptionAmount(
+    {
+      billingType: timerEditForm.billingType,
+      duration: timerEditForm.duration,
+      weekdayType: timerEditForm.weekdayType,
+      weekendType: timerEditForm.weekendType,
+      overtimeMinutes: timerEditForm.overtimeMinutes,
+      largeImages: timerEditForm.largeImages,
+      extraSmallImages: timerEditForm.extraSmallImages,
+      extraLargeImages: timerEditForm.extraLargeImages,
+      miscSelections: timerEditForm.miscSelections,
+      additionalFee: timerEditForm.additionalFee
+    },
+    billingRules.value
+  )
+)
+
+const timerEditMeituanDeduction = computed(() => (
+  timerEditForm.meituanCustomer
+    ? calculateMeituanDeduction(timerEditPreview.value.baseFee)
+    : 0
+))
+
+const timerEditFinalAmount = computed(() =>
+  applyDeduction(timerEditPreview.value.total, timerEditMeituanDeduction.value)
 )
 
 const consumeSubmitLabel = computed(() => {
@@ -227,7 +300,8 @@ const normalizeTransaction = (transaction = {}) => ({
   activityId: transaction.activityId ?? transaction.activity_id ?? null,
   createdAt: transaction.createdAt ?? transaction.created_at ?? transaction.transaction_time ?? null,
   operatorName: transaction.operatorName ?? transaction.operator_name ?? '',
-  status: transaction.status ?? 'completed'
+  status: transaction.status ?? 'completed',
+  miscSelections: transaction.miscSelections ?? transaction.misc_selections ?? {}
 })
 
 const filteredCustomers = computed(() => {
@@ -249,6 +323,41 @@ const validCustomers = computed(() =>
 
 function formatAmount(amount) {
   return parseFloat(amount || 0).toFixed(2)
+}
+
+function isTimerConsumptionTransaction(transaction = {}) {
+  if (transaction?.type !== 'consumption') return false
+  const description = String(transaction?.description || '').trim()
+  return description.startsWith('计时消费')
+}
+
+function canEditTimerConsumptionTransaction(transaction = {}) {
+  const normalized = normalizeTransaction(transaction)
+  return Boolean(normalized?.id) && isTimerConsumptionTransaction(normalized)
+}
+
+function parseElapsedMinutesFromDescription(description = '') {
+  const text = String(description || '')
+  const matched = text.match(/(\d+)\s*小时(\d+)\s*分钟/)
+  if (!matched) return 60
+  const hours = Number.parseInt(matched[1], 10)
+  const minutes = Number.parseInt(matched[2], 10)
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || hours < 0 || minutes < 0) return 60
+  return (hours * 60) + minutes
+}
+
+function inferTimerBillingTypeFromDescription(description = '') {
+  const text = String(description || '')
+  if (text.includes('计时消费(工作日)')) return 'weekday'
+  if (text.includes('计时消费(周末)')) return 'weekend'
+  return 'limited'
+}
+
+function inferTimerNotesFromDescription(description = '') {
+  const text = String(description || '')
+  const matched = text.match(/备注:\s*(.+)$/)
+  if (!matched) return ''
+  return String(matched[1] || '').trim()
 }
 
 function formatFilterDateLabel(value) {
@@ -290,6 +399,112 @@ function showFeedback(tone, message, { persist = false } = {}) {
       feedbackTimer = null
     }, 4500)
   }
+}
+
+function createMiscSelectionMap(seed = {}) {
+  const source = seed && typeof seed === 'object' ? seed : {}
+  const result = {}
+  enabledMiscItems.value.forEach((item) => {
+    const current = Number(source[item.id])
+    const available = getMiscAvailableQuantity(item)
+    const normalized = Number.isFinite(current) && current >= 0 ? Math.floor(current) : 0
+    result[item.id] = Math.min(available, normalized)
+  })
+  return result
+}
+
+function getMiscAvailableQuantity(item) {
+  return Math.max(0, Math.floor(Number(item?.current_stock) || 0))
+}
+
+function formatMiscStock(item) {
+  return `${getMiscAvailableQuantity(item)}${item?.unit_label || '个'}`
+}
+
+function clampMiscSelection(selectionMap, item) {
+  if (!selectionMap || !item?.id) return
+  const available = getMiscAvailableQuantity(item)
+  const current = Number(selectionMap[item.id])
+  const normalized = Number.isFinite(current) && current >= 0 ? Math.floor(current) : 0
+  selectionMap[item.id] = Math.min(available, normalized)
+}
+
+function handleMiscSelectionInput(selectionMap, item, rawValue) {
+  if (!selectionMap || !item?.id) return
+  selectionMap[item.id] = rawValue
+  clampMiscSelection(selectionMap, item)
+}
+
+function buildMiscChargeSummary(selectionMap = {}) {
+  const safeMap = selectionMap && typeof selectionMap === 'object' ? selectionMap : {}
+  const details = []
+  let fee = 0
+
+  enabledMiscItems.value.forEach((item) => {
+    const count = Math.min(getMiscAvailableQuantity(item), Number(safeMap[item.id]))
+    if (!Number.isFinite(count) || count <= 0 || !Number.isInteger(count)) return
+
+    fee += count * (Number(item.unit_price) || 0)
+    details.push(`${item.name}x${count}`)
+  })
+
+  return {
+    fee: Math.round((fee + Number.EPSILON) * 100) / 100,
+    details
+  }
+}
+
+function syncAutoMiscSelections(seed = null) {
+  const source = seed !== null ? seed : autoConsumeForm.miscSelections
+  autoConsumeForm.miscSelections = createMiscSelectionMap(source)
+}
+
+function syncManualMiscSelections(seed = null) {
+  const source = seed !== null ? seed : manualConsumeForm.miscSelections
+  manualConsumeForm.miscSelections = createMiscSelectionMap(source)
+}
+
+function syncTimerMiscSelections(seed = null) {
+  const source = seed !== null ? seed : timerConsumeForm.miscSelections
+  timerConsumeForm.miscSelections = createMiscSelectionMap(source)
+}
+
+function syncTimerEditMiscSelections(seed = null) {
+  const source = seed !== null ? seed : timerEditForm.miscSelections
+  timerEditForm.miscSelections = createMiscSelectionMap(source)
+}
+
+function collectMiscSelectionErrors(selectionMap = {}) {
+  const errors = []
+  enabledMiscItems.value.forEach((item) => {
+    const raw = selectionMap[item.id]
+    if (raw === '' || raw === null || raw === undefined) return
+    const count = Number(raw)
+    if (!Number.isFinite(count) || count < 0 || !Number.isInteger(count)) {
+      errors.push(`${item.name}数量必须为非负整数`)
+      return
+    }
+    if (count > getMiscAvailableQuantity(item)) {
+      errors.push(`${item.name}库存不足（可用 ${formatMiscStock(item)}）`)
+    }
+  })
+  return errors
+}
+
+function collectAutoMiscErrors(selectionMap = {}) {
+  return collectMiscSelectionErrors(selectionMap)
+}
+
+function collectManualMiscErrors(selectionMap = {}) {
+  return collectMiscSelectionErrors(selectionMap)
+}
+
+function collectTimerMiscErrors(selectionMap = {}) {
+  return collectMiscSelectionErrors(selectionMap)
+}
+
+function collectTimerEditMiscErrors(selectionMap = {}) {
+  return collectMiscSelectionErrors(selectionMap)
 }
 
 function rememberDialogTrigger() {
@@ -390,9 +605,17 @@ async function fetchBillingRules() {
     const response = await api.get('/billing-rules')
     const payload = response?.data || response || {}
     billingRules.value = normalizeBillingRules(payload)
+    syncManualMiscSelections()
+    syncAutoMiscSelections()
+    syncTimerMiscSelections()
+    syncTimerEditMiscSelections()
   } catch (error) {
     console.error('Failed to fetch billing rules:', error)
     billingRules.value = normalizeBillingRules()
+    syncManualMiscSelections()
+    syncAutoMiscSelections()
+    syncTimerMiscSelections()
+    syncTimerEditMiscSelections()
   }
 }
 
@@ -464,6 +687,7 @@ function resetConsumeForms(customerId = '') {
   manualConsumeForm.customerId = customerId
   manualConsumeForm.amount = ''
   manualConsumeForm.description = ''
+  syncManualMiscSelections({})
   manualConsumeForm.meituanCustomer = false
 
   autoConsumeForm.customerId = customerId
@@ -475,15 +699,39 @@ function resetConsumeForms(customerId = '') {
   autoConsumeForm.largeImages = 0
   autoConsumeForm.extraSmallImages = 0
   autoConsumeForm.extraLargeImages = 0
+  syncAutoMiscSelections({})
   autoConsumeForm.additionalFee = 0
   autoConsumeForm.notes = ''
   autoConsumeForm.meituanCustomer = false
 
   Object.assign(timerConsumeForm, createTimerConsumeForm(customerId))
+  syncTimerMiscSelections({})
 
   manualConsumeErrors.value = {}
   autoConsumeErrors.value = {}
   timerConsumeErrors.value = {}
+}
+
+function resetTimerEditForm(transaction = null) {
+  const description = String(transaction?.description || '').trim()
+  const inferredBillingType = inferTimerBillingTypeFromDescription(description)
+  const inferredElapsedMinutes = parseElapsedMinutesFromDescription(description)
+  const inferredNotes = inferTimerNotesFromDescription(description)
+
+  timerEditForm.elapsedMinutes = Math.max(0, Math.floor(Number(inferredElapsedMinutes) || 0))
+  timerEditForm.billingType = inferredBillingType
+  timerEditForm.duration = '1'
+  timerEditForm.weekdayType = 'singleUnlimited'
+  timerEditForm.weekendType = 'singleUnlimited'
+  timerEditForm.overtimeMinutes = 0
+  timerEditForm.largeImages = 0
+  timerEditForm.extraSmallImages = 0
+  timerEditForm.extraLargeImages = 0
+  timerEditForm.additionalFee = 0
+  timerEditForm.notes = inferredNotes
+  timerEditForm.meituanCustomer = description.includes('美团客户')
+  syncTimerEditMiscSelections(transaction?.miscSelections || {})
+  timerEditErrors.value = {}
 }
 
 async function handleFilter() {
@@ -527,6 +775,14 @@ function closeDetailDialog(force = false) {
   if (!force && loading.value) return
   showDetailDialog.value = false
   selectedTransaction.value = null
+  restoreDialogTrigger()
+}
+
+function closeTimerEditDialog(force = false) {
+  if (!force && timerEditTargetTransaction.value && isEditingTransaction(timerEditTargetTransaction.value.id)) return
+  showTimerEditDialog.value = false
+  timerEditTargetTransaction.value = null
+  resetTimerEditForm()
   restoreDialogTrigger()
 }
 
@@ -574,12 +830,18 @@ function validateManualConsumeForm() {
   } else if (!validCustomers.value.some((customer) => customer.id === manualConsumeForm.customerId)) {
     errors.customerId = '请选择有效客户'
   }
-  if (!manualConsumeForm.amount || parseFloat(manualConsumeForm.amount) <= 0) {
-    errors.amount = '请输入有效金额'
+  if (manualRawTotal.value <= 0) {
+    errors.amount = '请输入有效金额或杂项数量'
   }
   if (!manualConsumeForm.description?.trim()) {
     errors.description = '请输入消费描述'
   }
+
+  const miscErrors = collectManualMiscErrors(manualConsumeForm.miscSelections)
+  if (miscErrors.length > 0) {
+    errors.misc = miscErrors[0]
+  }
+
   manualConsumeErrors.value = errors
   return Object.keys(errors).length === 0
 }
@@ -596,14 +858,65 @@ function validateAutoConsumeForm() {
     errors.total = '自动结算金额必须大于0'
   }
 
+  const miscErrors = collectAutoMiscErrors(autoConsumeForm.miscSelections)
+  if (miscErrors.length > 0) {
+    errors.misc = miscErrors[0]
+  }
+
   autoConsumeErrors.value = errors
   return Object.keys(errors).length === 0
 }
 
 function validateTimerConsumeFormState() {
   const { isValid, errors } = validateSharedTimerConsumeForm(timerConsumeForm, validCustomers.value)
+  const miscErrors = collectTimerMiscErrors(timerConsumeForm.miscSelections)
+  if (miscErrors.length > 0) {
+    errors.misc = miscErrors[0]
+  }
   timerConsumeErrors.value = errors
-  return isValid
+  return isValid && miscErrors.length === 0
+}
+
+function validateTimerEditForm() {
+  const errors = {}
+  const elapsedMinutes = Number(timerEditForm.elapsedMinutes)
+  if (!Number.isFinite(elapsedMinutes) || elapsedMinutes < 0) {
+    errors.elapsedMinutes = '计费时长需为大于等于0的整数分钟'
+  }
+
+  const finalAmount = timerEditForm.meituanCustomer ? timerEditFinalAmount.value : timerEditPreview.value.total
+  if (!Number.isFinite(finalAmount) || finalAmount <= 0) {
+    errors.total = '重算后的交易金额必须大于0'
+  }
+
+  const miscErrors = collectTimerEditMiscErrors(timerEditForm.miscSelections)
+  if (miscErrors.length > 0) {
+    errors.misc = miscErrors[0]
+  }
+
+  timerEditErrors.value = errors
+  if (Object.keys(errors).length > 0) return null
+
+  const baseNotes = String(timerEditForm.notes || '').trim()
+  const notes = timerEditForm.meituanCustomer
+    ? `${baseNotes}${baseNotes ? '；' : ''}美团客户(基础费用抽成￥${formatAmount(timerEditMeituanDeduction.value)})`
+    : baseNotes
+
+  const description = buildConsumptionDescription(
+    {
+      mode: 'timer',
+      billingType: timerEditForm.billingType,
+      elapsedMinutes: Math.max(0, Math.floor(elapsedMinutes))
+    },
+    timerEditPreview.value,
+    notes
+  )
+
+  return {
+    amount: Math.round((finalAmount + Number.EPSILON) * 100) / 100,
+    description,
+    miscSelections: createMiscSelectionMap(timerEditForm.miscSelections)
+  }
 }
 
 async function submitRecharge() {
@@ -635,6 +948,7 @@ async function submitManualConsume() {
   if (!validateManualConsumeForm()) return
 
   const amount = manualFinalAmount.value
+  const miscSelections = createMiscSelectionMap(manualConsumeForm.miscSelections)
 
   const currentBalance = await fetchCustomerBalance(manualConsumeForm.customerId)
   if (currentBalance !== null && amount > currentBalance) {
@@ -646,14 +960,20 @@ async function submitManualConsume() {
     return
   }
 
-  const description = manualConsumeForm.meituanCustomer
-    ? `${manualConsumeForm.description} - 美团客户(抽成￥${formatAmount(manualMeituanDeduction.value)})`
-    : manualConsumeForm.description
+  const noteParts = [String(manualConsumeForm.description || '').trim()]
+  if (manualMiscSummary.value.details.length > 0) {
+    noteParts.push(`杂项${manualMiscSummary.value.details.join('、')}`)
+  }
+  if (manualConsumeForm.meituanCustomer) {
+    noteParts.push(`美团客户(抽成￥${formatAmount(manualMeituanDeduction.value)})`)
+  }
+  const description = noteParts.filter(Boolean).join('；')
 
   await api.post('/transactions/consumption', {
     customer_id: manualConsumeForm.customerId,
     amount,
-    description
+    description,
+    misc_selections: miscSelections
   })
 }
 
@@ -661,6 +981,7 @@ async function submitAutoConsume() {
   if (!validateAutoConsumeForm()) return
 
   const amount = autoFinalAmount.value
+  const miscSelections = createMiscSelectionMap(autoConsumeForm.miscSelections)
   const currentBalance = await fetchCustomerBalance(autoConsumeForm.customerId)
   if (currentBalance !== null && amount > currentBalance) {
     autoConsumeErrors.value = {
@@ -685,7 +1006,8 @@ async function submitAutoConsume() {
   await api.post('/transactions/consumption', {
     customer_id: autoConsumeForm.customerId,
     amount,
-    description
+    description,
+    misc_selections: miscSelections
   })
 }
 
@@ -729,6 +1051,22 @@ async function viewTransactionDetail(transaction) {
   detailCloseButtonRef.value?.focus()
 }
 
+function isEditingTransaction(transactionId = '') {
+  return editingTransactionId.value === transactionId
+}
+
+async function openTimerEditDialog(transaction) {
+  const normalized = normalizeTransaction(transaction)
+  if (!normalized?.id || !canEditTimerConsumptionTransaction(normalized)) return
+
+  rememberDialogTrigger()
+  timerEditTargetTransaction.value = normalized
+  resetTimerEditForm(normalized)
+  showTimerEditDialog.value = true
+  await nextTick()
+  timerEditAmountInputRef.value?.focus()
+}
+
 function isCancellingTransaction(transactionId = '') {
   return cancellingTransactionId.value === transactionId
 }
@@ -769,6 +1107,51 @@ async function confirmCancelTransaction() {
     showFeedback('error', error?.response?.data?.message || error?.message || '取消交易失败')
   } finally {
     cancellingTransactionId.value = ''
+  }
+}
+
+async function confirmTimerEditTransaction() {
+  const normalized = normalizeTransaction(timerEditTargetTransaction.value)
+  if (!normalized?.id) return
+  if (!canEditTimerConsumptionTransaction(normalized)) return
+
+  const payload = validateTimerEditForm()
+  if (!payload) return
+
+  editingTransactionId.value = normalized.id
+  try {
+    const response = await api.put(`/transactions/${normalized.id}`, {
+      amount: payload.amount,
+      description: payload.description,
+      misc_selections: payload.miscSelections,
+      regenerate: true
+    })
+
+    const result = response?.data || response || {}
+    const nextTransaction = normalizeTransaction(result.transaction || {})
+    const replacedId = String(result.replaced_transaction_id || '').trim()
+
+    if (selectedTransaction.value?.id === normalized.id) {
+      selectedTransaction.value = nextTransaction?.id ? nextTransaction : null
+    }
+
+    closeTimerEditDialog(true)
+    await Promise.all([fetchTransactions(), fetchCustomers()])
+    if (nextTransaction?.id) {
+      showFeedback(
+        'success',
+        replacedId
+          ? `已重建交易记录 #${nextTransaction.id}（原 #${replacedId}）`
+          : `已修改计时消费 #${nextTransaction.id}`
+      )
+    } else {
+      showFeedback('success', '计时消费修改成功')
+    }
+  } catch (error) {
+    console.error('Failed to update timer consumption transaction:', error)
+    showFeedback('error', error?.response?.data?.message || error?.message || '修改计时消费失败')
+  } finally {
+    editingTransactionId.value = ''
   }
 }
 
@@ -889,6 +1272,12 @@ function clearRouteActionQuery() {
 function handleGlobalKeydown(event) {
   if (event.key !== 'Escape') return
 
+  if (showTimerEditDialog.value) {
+    event.preventDefault()
+    closeTimerEditDialog()
+    return
+  }
+
   if (showCancelConfirmDialog.value) {
     event.preventDefault()
     closeCancelConfirmDialog()
@@ -1003,17 +1392,6 @@ onUnmounted(() => {
             </svg>
             <span>消费</span>
           </button>
-          <button
-            type="button"
-            disabled
-            title="导出功能待实现"
-            class="page-hero__action"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-            </svg>
-            <span>导出（待实现）</span>
-          </button>
         </div>
       </div>
     </section>
@@ -1030,7 +1408,7 @@ onUnmounted(() => {
     </Transition>
 
     <section class="rounded-2xl border border-slate-200/70 bg-white p-4 sm:p-6 shadow-sm">
-      <div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-[minmax(120px,0.75fr)_minmax(160px,1fr)_minmax(160px,1fr)_minmax(200px,1.2fr)_auto_auto_auto] xl:items-end">
+      <div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-[minmax(120px,0.75fr)_minmax(160px,1fr)_minmax(160px,1fr)_minmax(200px,1.2fr)_auto_auto] xl:items-end">
         <div>
           <label class="block text-sm font-semibold text-slate-700 mb-1.5">交易类型</label>
           <select
@@ -1105,7 +1483,6 @@ onUnmounted(() => {
         >
           重置
         </button>
-        <span class="text-xs text-slate-500 xl:whitespace-nowrap xl:justify-self-end">导出功能待实现</span>
       </div>
     </section>
 
@@ -1199,6 +1576,14 @@ onUnmounted(() => {
                     查看详情
                   </button>
                   <button
+                    v-if="canEditTimerConsumptionTransaction(transaction)"
+                    @click="openTimerEditDialog(transaction)"
+                    :disabled="isEditingTransaction(transaction.id)"
+                    class="text-amber-600 hover:text-amber-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {{ isEditingTransaction(transaction.id) ? '保存中...' : '修改计时' }}
+                  </button>
+                  <button
                     v-if="canCancelTransaction(transaction.type)"
                     @click="cancelTransaction(transaction)"
                     :disabled="isCancellingTransaction(transaction.id)"
@@ -1270,18 +1655,26 @@ onUnmounted(() => {
                 : `描述：${transaction.description || '-'}`
               }}
             </p>
-            <div class="mt-2.5 flex items-center gap-2">
+            <div class="mt-2.5 flex flex-wrap items-center gap-2">
               <button
                 @click="viewTransactionDetail(transaction)"
-                class="flex-1 px-3 py-2 text-sm rounded-lg border border-blue-200 text-blue-700 bg-blue-50 hover:bg-blue-100 transition-colors"
+                class="flex-1 min-w-[90px] px-3 py-2 text-sm rounded-lg border border-blue-200 text-blue-700 bg-blue-50 hover:bg-blue-100 transition-colors"
               >
                 查看详情
+              </button>
+              <button
+                v-if="canEditTimerConsumptionTransaction(transaction)"
+                @click="openTimerEditDialog(transaction)"
+                :disabled="isEditingTransaction(transaction.id)"
+                class="flex-1 min-w-[90px] px-3 py-2 text-sm rounded-lg border border-amber-200 text-amber-700 bg-amber-50 hover:bg-amber-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {{ isEditingTransaction(transaction.id) ? '保存中...' : '修改计时' }}
               </button>
               <button
                 v-if="canCancelTransaction(transaction.type)"
                 @click="cancelTransaction(transaction)"
                 :disabled="isCancellingTransaction(transaction.id)"
-                class="flex-1 px-3 py-2 text-sm rounded-lg border border-rose-200 text-rose-700 bg-rose-50 hover:bg-rose-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                class="flex-1 min-w-[90px] px-3 py-2 text-sm rounded-lg border border-rose-200 text-rose-700 bg-rose-50 hover:bg-rose-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {{ isCancellingTransaction(transaction.id) ? '取消中...' : '取消交易' }}
               </button>
@@ -1567,6 +1960,40 @@ onUnmounted(() => {
                 </p>
               </div>
 
+              <div v-if="enabledMiscItems.length > 0" class="space-y-3">
+                <div class="flex items-center justify-between">
+                  <h4 class="text-sm font-medium text-gray-700">杂项计费（仅整数）</h4>
+                  <button
+                    type="button"
+                    class="text-xs text-blue-600 hover:text-blue-700"
+                    @click="syncManualMiscSelections({})"
+                  >
+                    一键清零
+                  </button>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div v-for="item in enabledMiscItems" :key="`manual-misc-${item.id}`">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">
+                      {{ item.name }}（¥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
+                    </label>
+                    <p class="text-xs text-slate-500 mb-1">可用库存：{{ formatMiscStock(item) }}</p>
+                    <input
+                      v-model.number="manualConsumeForm.miscSelections[item.id]"
+                      type="number"
+                      min="0"
+                      :max="getMiscAvailableQuantity(item)"
+                      step="1"
+                      class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      @input="handleMiscSelectionInput(manualConsumeForm.miscSelections, item, $event.target.value)"
+                      @change="clampMiscSelection(manualConsumeForm.miscSelections, item)"
+                    />
+                  </div>
+                </div>
+                <p v-if="manualConsumeErrors.misc" class="text-red-500 text-xs mt-1">
+                  {{ manualConsumeErrors.misc }}
+                </p>
+              </div>
+
               <label class="inline-flex items-center gap-2 text-sm text-gray-700">
                 <input
                   v-model="manualConsumeForm.meituanCustomer"
@@ -1576,9 +2003,11 @@ onUnmounted(() => {
                 美团客户（消费金额抽成7%）
               </label>
 
-              <div v-if="manualConsumeForm.meituanCustomer" class="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800 space-y-1">
-                <p>原始金额：￥{{ formatAmount(manualInputAmount) }}</p>
-                <p>美团抽成：-￥{{ formatAmount(manualMeituanDeduction) }}</p>
+              <div v-if="manualConsumeForm.meituanCustomer || manualMiscSummary.fee > 0" class="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800 space-y-1">
+                <p>手动金额：￥{{ formatAmount(manualInputAmount) }}</p>
+                <p>杂项费用：￥{{ formatAmount(manualMiscSummary.fee) }}</p>
+                <p>原始金额：￥{{ formatAmount(manualRawTotal) }}</p>
+                <p v-if="manualConsumeForm.meituanCustomer">美团抽成：-￥{{ formatAmount(manualMeituanDeduction) }}</p>
                 <p class="font-semibold">结算金额：￥{{ formatAmount(manualFinalAmount) }}</p>
               </div>
             </div>
@@ -1702,6 +2131,37 @@ onUnmounted(() => {
                 </div>
               </div>
 
+              <div v-if="enabledMiscItems.length > 0" class="space-y-3">
+                <div class="flex items-center justify-between">
+                  <h4 class="text-sm font-medium text-gray-700">杂项计费（仅整数）</h4>
+                  <button
+                    type="button"
+                    class="text-xs text-blue-600 hover:text-blue-700"
+                    @click="syncAutoMiscSelections({})"
+                  >
+                    一键清零
+                  </button>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div v-for="item in enabledMiscItems" :key="item.id">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">
+                      {{ item.name }}（¥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
+                    </label>
+                    <p class="text-xs text-slate-500 mb-1">可用库存：{{ formatMiscStock(item) }}</p>
+                    <input
+                      v-model.number="autoConsumeForm.miscSelections[item.id]"
+                      type="number"
+                      min="0"
+                      :max="getMiscAvailableQuantity(item)"
+                      step="1"
+                      class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      @input="handleMiscSelectionInput(autoConsumeForm.miscSelections, item, $event.target.value)"
+                      @change="clampMiscSelection(autoConsumeForm.miscSelections, item)"
+                    />
+                  </div>
+                </div>
+              </div>
+
               <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">备注</label>
                 <textarea
@@ -1726,6 +2186,7 @@ onUnmounted(() => {
                 <p>基础费用: ￥{{ formatAmount(autoConsumePreview.baseFee) }}</p>
                 <p>超时费用: ￥{{ formatAmount(autoConsumePreview.overtimeFee) }}</p>
                 <p>耗材费用: ￥{{ formatAmount(autoConsumePreview.materialFee) }}</p>
+                <p>杂项费用: ￥{{ formatAmount(autoConsumePreview.miscFee) }}</p>
                 <p>附加费用: ￥{{ formatAmount(autoConsumePreview.additionalFee) }}</p>
                 <p v-if="autoConsumeForm.meituanCustomer">美团抽成: -￥{{ formatAmount(autoMeituanDeduction) }}</p>
                 <p class="font-semibold text-base">
@@ -1735,6 +2196,9 @@ onUnmounted(() => {
               <p v-if="autoConsumeErrors.total" class="text-red-500 text-xs mt-1">
                 {{ autoConsumeErrors.total }}
               </p>
+              <p v-if="autoConsumeErrors.misc" class="text-red-500 text-xs mt-1">
+                {{ autoConsumeErrors.misc }}
+              </p>
             </div>
 
             <div v-else-if="consumeMode === 'timer'">
@@ -1742,8 +2206,12 @@ onUnmounted(() => {
                 :model-value="timerConsumeForm"
                 :errors="timerConsumeErrors"
                 :customer-options="validCustomers"
+                :enabled-misc-items="enabledMiscItems"
                 @update:model-value="applyTimerConsumeForm"
               />
+              <div v-if="enabledMiscItems.length > 0" class="mt-3 bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800">
+                预计杂项费用：￥{{ formatAmount(timerMiscSummary.fee) }}
+              </div>
             </div>
           </div>
           <div class="px-6 py-4 border-t border-gray-200 flex justify-end space-x-3">
@@ -1759,6 +2227,231 @@ onUnmounted(() => {
               class="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {{ consumeSubmitLabel }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+    <Teleport to="body">
+      <div
+        v-if="showTimerEditDialog && timerEditTargetTransaction"
+        class="fixed inset-0 z-50 bg-black/55 flex items-center justify-center p-4"
+        @mousedown="onBackdropMouseDown('transactions-timer-edit', $event)"
+        @mouseup="onBackdropMouseUp('transactions-timer-edit', $event) && closeTimerEditDialog()"
+      >
+        <div class="w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-slate-100 max-h-[90vh] overflow-y-auto">
+          <div class="px-6 py-5 border-b border-slate-100">
+            <h3 class="text-lg font-semibold text-slate-900">修改计时消费（重建交易）</h3>
+            <p class="mt-2 text-sm text-slate-600">交易ID：#{{ timerEditTargetTransaction.id }}</p>
+            <p class="mt-1 text-xs text-slate-500">当前金额：￥{{ formatAmount(timerEditTargetTransaction.amount) }}</p>
+          </div>
+          <div class="px-6 py-5 space-y-4">
+            <div class="bg-sky-50 border border-sky-200 rounded-lg p-3 text-sm text-sky-800 space-y-1">
+              <p>客户：{{ getCustomerName(timerEditTargetTransaction) }}</p>
+              <p class="truncate" :title="timerEditTargetTransaction.description || '-'">
+                原描述：{{ timerEditTargetTransaction.description || '-' }}
+              </p>
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-slate-700 mb-1">计费时长（分钟）</label>
+              <input
+                ref="timerEditAmountInputRef"
+                v-model.number="timerEditForm.elapsedMinutes"
+                type="number"
+                min="0"
+                step="1"
+                class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+              <p v-if="timerEditErrors.elapsedMinutes" class="text-red-500 text-xs mt-1">
+                {{ timerEditErrors.elapsedMinutes }}
+              </p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">计费类型</label>
+                <select
+                  v-model="timerEditForm.billingType"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                >
+                  <option value="limited">限时计费</option>
+                  <option value="weekday">工作日计费</option>
+                  <option value="weekend">周末计费</option>
+                </select>
+              </div>
+
+              <div v-if="timerEditForm.billingType === 'limited'">
+                <label class="block text-sm font-medium text-gray-700 mb-1">时长</label>
+                <select
+                  v-model="timerEditForm.duration"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                >
+                  <option value="1">1小时</option>
+                  <option value="2">2小时</option>
+                </select>
+              </div>
+
+              <div v-if="timerEditForm.billingType === 'weekday'">
+                <label class="block text-sm font-medium text-gray-700 mb-1">工作日方案</label>
+                <select
+                  v-model="timerEditForm.weekdayType"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                >
+                  <option value="singleUnlimited">单人不限时不限板</option>
+                  <option value="doubleUnlimited">双人不限时不限板</option>
+                  <option value="singleLimited">单人不限时限板</option>
+                </select>
+              </div>
+
+              <div v-if="timerEditForm.billingType === 'weekend'">
+                <label class="block text-sm font-medium text-gray-700 mb-1">周末方案</label>
+                <select
+                  v-model="timerEditForm.weekendType"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                >
+                  <option value="singleUnlimited">单人不限时不限板</option>
+                  <option value="doubleUnlimited">双人不限时不限板</option>
+                  <option value="singleLimited">单人不限时限板</option>
+                </select>
+              </div>
+
+              <div v-if="timerEditForm.billingType === 'limited'">
+                <label class="block text-sm font-medium text-gray-700 mb-1">超时分钟</label>
+                <input
+                  v-model.number="timerEditForm.overtimeMinutes"
+                  type="number"
+                  min="0"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">大图数量</label>
+                <input
+                  v-model.number="timerEditForm.largeImages"
+                  type="number"
+                  min="0"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                />
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">超量小图</label>
+                <input
+                  v-model.number="timerEditForm.extraSmallImages"
+                  type="number"
+                  min="0"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                />
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">超量大图</label>
+                <input
+                  v-model.number="timerEditForm.extraLargeImages"
+                  type="number"
+                  min="0"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                />
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">附加费用</label>
+                <input
+                  v-model.number="timerEditForm.additionalFee"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                />
+              </div>
+            </div>
+
+            <div v-if="enabledMiscItems.length > 0" class="space-y-3">
+              <div class="flex items-center justify-between">
+                <h4 class="text-sm font-medium text-gray-700">杂项计费（仅整数）</h4>
+                <button
+                  type="button"
+                  class="text-xs text-blue-600 hover:text-blue-700"
+                  @click="syncTimerEditMiscSelections({})"
+                >
+                  一键清零
+                </button>
+              </div>
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div v-for="item in enabledMiscItems" :key="`timer-edit-misc-${item.id}`">
+                  <label class="block text-sm font-medium text-gray-700 mb-1">
+                    {{ item.name }}（¥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
+                  </label>
+                  <p class="text-xs text-slate-500 mb-1">可用库存：{{ formatMiscStock(item) }}</p>
+                  <input
+                    v-model.number="timerEditForm.miscSelections[item.id]"
+                    type="number"
+                    min="0"
+                    :max="getMiscAvailableQuantity(item)"
+                    step="1"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                    @input="handleMiscSelectionInput(timerEditForm.miscSelections, item, $event.target.value)"
+                    @change="clampMiscSelection(timerEditForm.miscSelections, item)"
+                  />
+                </div>
+              </div>
+              <p v-if="timerEditErrors.misc" class="text-red-500 text-xs mt-1">
+                {{ timerEditErrors.misc }}
+              </p>
+            </div>
+
+            <label class="inline-flex items-center gap-2 text-sm text-gray-700">
+              <input
+                v-model="timerEditForm.meituanCustomer"
+                type="checkbox"
+                class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              >
+              美团客户（基础费用抽成7%）
+            </label>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">备注</label>
+              <textarea
+                v-model="timerEditForm.notes"
+                rows="2"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                placeholder="可选"
+              ></textarea>
+            </div>
+
+            <div class="bg-green-50 border border-green-200 rounded-lg p-4 text-sm text-green-800 space-y-1">
+              <p>计费类型：{{ getBillingTypeLabel(timerEditForm.billingType) }}</p>
+              <p>基础费用：￥{{ formatAmount(timerEditPreview.baseFee) }}</p>
+              <p>超时费用：￥{{ formatAmount(timerEditPreview.overtimeFee) }}</p>
+              <p>耗材费用：￥{{ formatAmount(timerEditPreview.materialFee) }}</p>
+              <p>杂项费用：￥{{ formatAmount(timerEditPreview.miscFee) }}</p>
+              <p>附加费用：￥{{ formatAmount(timerEditPreview.additionalFee) }}</p>
+              <p v-if="timerEditForm.meituanCustomer">美团抽成：-￥{{ formatAmount(timerEditMeituanDeduction) }}</p>
+              <p class="font-semibold text-base">
+                重算金额：￥{{ formatAmount(timerEditForm.meituanCustomer ? timerEditFinalAmount : timerEditPreview.total) }}
+              </p>
+            </div>
+            <p v-if="timerEditErrors.total" class="text-red-500 text-xs mt-1">
+              {{ timerEditErrors.total }}
+            </p>
+          </div>
+          <div class="px-6 py-4 border-t border-slate-100 flex justify-end gap-3">
+            <button
+              type="button"
+              @click="closeTimerEditDialog"
+              :disabled="isEditingTransaction(timerEditTargetTransaction.id)"
+              class="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              @click="confirmTimerEditTransaction"
+              :disabled="isEditingTransaction(timerEditTargetTransaction.id)"
+              class="px-4 py-2 rounded-lg bg-amber-600 text-white hover:bg-amber-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {{ isEditingTransaction(timerEditTargetTransaction.id) ? '重建中...' : '确认重建交易' }}
             </button>
           </div>
         </div>
@@ -1867,7 +2560,16 @@ onUnmounted(() => {
               <p class="text-gray-900">{{ selectedTransaction.activity?.name || '-' }}</p>
             </div>
           </div>
-          <div class="px-6 py-4 border-t border-gray-200 flex justify-end">
+          <div class="px-6 py-4 border-t border-gray-200 flex items-center justify-between gap-3">
+            <button
+              v-if="canEditTimerConsumptionTransaction(selectedTransaction)"
+              @click="openTimerEditDialog(selectedTransaction)"
+              :disabled="isEditingTransaction(selectedTransaction.id)"
+              class="px-4 py-2 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {{ isEditingTransaction(selectedTransaction.id) ? '保存中...' : '修改计时消费' }}
+            </button>
+            <span v-else class="flex-1"></span>
             <button
               @click="closeDetailDialog()"
               class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"

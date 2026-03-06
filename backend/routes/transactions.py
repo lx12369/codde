@@ -3,6 +3,12 @@ from flask import Blueprint, request
 import re
 from models import db, Transaction, Customer, Balance, Activity, BeadInventoryBalance, BeadInventoryLedger
 from utils.audit_log import get_operator_name, write_log
+from utils.misc_inventory_service import normalize_misc_selections, apply_misc_outbound, apply_misc_inbound
+from utils.misc_selection_codec import (
+    compose_description_with_misc,
+    extract_misc_selections,
+    split_description_and_misc
+)
 from utils.response import success_response, error_response, paginated_response
 from utils.decorators import token_required
 from utils.bead_inventory_service import generate_entity_id, generate_reference_no
@@ -11,6 +17,7 @@ transactions_bp = Blueprint('transactions', __name__)
 BEAD_PURCHASE_DESC_PATTERN = re.compile(
     r'买豆(?P<movement>入库|出库)：.+?（(?P<material_id>M\d+)）.*?(?P=movement)\s+(?P<grams>\d+(?:\.\d+)?)g，单号\s+(?P<reference_no>[A-Z0-9]+)'
 )
+TIMER_CONSUMPTION_DESC_PATTERN = re.compile(r'^计时消费')
 
 
 def _generate_transaction_id():
@@ -82,6 +89,17 @@ def _parse_bead_purchase_description(description):
         'grams': grams,
         'reference_no': match.group('reference_no')
     }
+
+
+def _is_timer_consumption_transaction(transaction):
+    if not transaction or transaction.type != 'consumption':
+        return False
+
+    description = str(transaction.description or '').strip()
+    if not description:
+        return False
+
+    return bool(TIMER_CONSUMPTION_DESC_PATTERN.match(description))
 
 
 def _rollback_bead_purchase_inventory(transaction, operator):
@@ -238,19 +256,23 @@ def get_transactions():
 
     pagination = query.paginate(page=page, per_page=page_size, error_out=False)
 
-    items = [t.to_dict() for t in pagination.items]
+    items = []
+    for record in pagination.items:
+        item = record.to_dict()
+        item['misc_selections'] = extract_misc_selections(record.description)
+        items.append(item)
     customer_snapshot_map = _build_customer_snapshot_map([item.get('customer_id') for item in items])
     for item in items:
         customer_id = item.get('customer_id')
         snapshot = customer_snapshot_map.get(customer_id)
-        if snapshot:
+        if customer_id == 'C000':
+            item['customer_name'] = '豆仓损耗'
+            item['customer_phone'] = None
+            item['customer_wechat'] = None
+        elif snapshot:
             item['customer_name'] = snapshot.get('name')
             item['customer_phone'] = snapshot.get('phone')
             item['customer_wechat'] = snapshot.get('wechat')
-        elif customer_id == 'C000':
-            item['customer_name'] = '豆仓采购'
-            item['customer_phone'] = None
-            item['customer_wechat'] = None
 
     return paginated_response(items, pagination.total, page, page_size)
 
@@ -263,7 +285,9 @@ def get_transaction(transaction_id):
     if not transaction:
         return error_response('Transaction not found', 404)
 
-    return success_response(transaction.to_dict())
+    payload = transaction.to_dict()
+    payload['misc_selections'] = extract_misc_selections(transaction.description)
+    return success_response(payload)
 
 
 @transactions_bp.route('/recharge', methods=['POST'])
@@ -351,6 +375,7 @@ def create_consumption():
     customer_id = (data.get('customer_id') or '').strip()
     amount = _to_float(data.get('amount'), None)
     description = (data.get('description') or '').strip()
+    misc_selections = normalize_misc_selections(data.get('misc_selections', data.get('miscSelections')))
 
     if not customer_id:
         return error_response('Customer ID is required', 400)
@@ -372,12 +397,23 @@ def create_consumption():
     new_id = _generate_transaction_id()
     operator = get_operator_name(default='unknown')
 
+    if misc_selections:
+        try:
+            apply_misc_outbound(
+                misc_selections,
+                operator=operator,
+                reason=f'消费扣减（客户 {customer.name}（{customer_id}））'
+            )
+        except ValueError as exc:
+            db.session.rollback()
+            return error_response(str(exc), 400)
+
     transaction = Transaction(
         id=new_id,
         customer_id=customer_id,
         type='consumption',
         amount=amount,
-        description=description,
+        description=compose_description_with_misc(description, misc_selections),
         operator=operator
     )
 
@@ -395,6 +431,152 @@ def create_consumption():
     return success_response(transaction.to_dict(), 'Consumption created successfully', 201)
 
 
+@transactions_bp.route('/<transaction_id>', methods=['PUT'])
+@token_required
+def update_transaction(transaction_id):
+    transaction = Transaction.query.filter_by(id=transaction_id).first()
+    if not transaction:
+        return error_response('交易记录不存在', 404)
+
+    if not _is_timer_consumption_transaction(transaction):
+        return error_response('仅支持修改计时消费记录', 400)
+
+    data = request.get_json()
+    if not data:
+        return error_response('No data provided', 400)
+
+    has_amount = 'amount' in data
+    has_description = 'description' in data
+    has_misc_selections = 'misc_selections' in data or 'miscSelections' in data
+    regenerate = bool(data.get('regenerate'))
+
+    if not has_amount and not has_description and not has_misc_selections:
+        return error_response('至少提供 amount / description / misc_selections 之一', 400)
+
+    before_amount = _to_float(transaction.amount, 0.0) or 0.0
+    before_description, before_misc_selections = split_description_and_misc(transaction.description)
+
+    next_amount = before_amount
+    next_description = before_description
+    next_misc_selections = before_misc_selections
+
+    if has_amount:
+        parsed_amount = _to_float(data.get('amount'), None)
+        if parsed_amount is None or parsed_amount <= 0:
+            return error_response('Valid amount is required', 400)
+        next_amount = round(parsed_amount, 2)
+
+    if has_description:
+        parsed_description = str(data.get('description') or '').strip()
+        if not parsed_description:
+            return error_response('Description is required', 400)
+        next_description = parsed_description
+
+    if has_misc_selections:
+        next_misc_selections = normalize_misc_selections(
+            data.get('misc_selections', data.get('miscSelections'))
+        )
+
+    amount_delta = round(next_amount - before_amount, 2)
+
+    balance = Balance.query.filter_by(customer_id=transaction.customer_id).first()
+    if not balance:
+        balance = Balance(customer_id=transaction.customer_id, balance=0.0)
+        db.session.add(balance)
+
+    current_balance = _to_float(balance.balance, 0.0) or 0.0
+    if amount_delta > 0 and (current_balance + 1e-9) < amount_delta:
+        return error_response('余额不足，无法提高计时消费金额', 400)
+
+    operator = get_operator_name(default='unknown')
+
+    if before_misc_selections != next_misc_selections:
+        try:
+            if before_misc_selections:
+                apply_misc_inbound(
+                    before_misc_selections,
+                    operator=operator,
+                    reason=f'修改计时消费回补（交易#{transaction.id}）'
+                )
+            if next_misc_selections:
+                apply_misc_outbound(
+                    next_misc_selections,
+                    operator=operator,
+                    reason=f'修改计时消费扣减（交易#{transaction.id}）'
+                )
+        except ValueError as exc:
+            db.session.rollback()
+            return error_response(str(exc), 400)
+
+    balance.balance = round(current_balance - amount_delta, 2)
+
+    next_stored_description = compose_description_with_misc(next_description, next_misc_selections)
+
+    customer = Customer.query.filter_by(id=transaction.customer_id).first()
+    customer_label = f'{customer.name}（{transaction.customer_id}）' if customer else transaction.customer_id
+
+    changes = []
+    if abs(amount_delta) > 1e-9:
+        changes.append(f'金额：¥{before_amount:.2f} -> ¥{next_amount:.2f}')
+    if before_description != next_description:
+        changes.append('描述已更新')
+    if before_misc_selections != next_misc_selections:
+        changes.append('杂项已更新')
+
+    result_transaction = transaction
+    replaced_transaction_id = None
+
+    if regenerate:
+        replaced_transaction_id = transaction.id
+        new_transaction = Transaction(
+            id=_generate_transaction_id(),
+            customer_id=transaction.customer_id,
+            type=transaction.type,
+            amount=next_amount,
+            description=next_stored_description,
+            operator=operator
+        )
+        db.session.add(new_transaction)
+        db.session.delete(transaction)
+        result_transaction = new_transaction
+    else:
+        transaction.amount = next_amount
+        transaction.description = next_stored_description
+
+    if changes:
+        write_log(
+            'transaction_regenerate_timer_consumption' if regenerate else 'transaction_update_timer_consumption',
+            (
+                f'重建计时消费：客户 {customer_label}，交易 #{replaced_transaction_id} -> #{result_transaction.id}，'
+                f'变更：{"；".join(changes)}'
+                if regenerate
+                else f'修改计时消费：客户 {customer_label}，交易 #{transaction.id}，变更：{"；".join(changes)}'
+            ),
+            operator=operator
+        )
+    elif regenerate:
+        write_log(
+            'transaction_regenerate_timer_consumption',
+            f'重建计时消费：客户 {customer_label}，交易 #{replaced_transaction_id} -> #{result_transaction.id}',
+            operator=operator
+        )
+
+    db.session.commit()
+
+    transaction_payload = result_transaction.to_dict()
+    transaction_payload['misc_selections'] = next_misc_selections
+
+    return success_response(
+        {
+            'transaction': transaction_payload,
+            'replaced_transaction_id': replaced_transaction_id,
+            'customer_id': result_transaction.customer_id,
+            'balance': balance.balance
+        },
+        '交易记录已重新生成' if regenerate else '交易记录更新成功'
+    )
+
+
 @transactions_bp.route('/<transaction_id>/cancel', methods=['POST'])
 @token_required
 def cancel_transaction(transaction_id):
@@ -405,7 +587,7 @@ def cancel_transaction(transaction_id):
     customer = Customer.query.filter_by(id=transaction.customer_id).first()
     if not customer:
         if transaction.type == 'bead_purchase':
-            customer = Customer(id=transaction.customer_id, name='豆仓采购', is_deleted=True)
+            customer = Customer(id=transaction.customer_id, name='豆仓损耗', is_deleted=True)
             db.session.add(customer)
             db.session.flush()
         else:
@@ -434,10 +616,25 @@ def cancel_transaction(transaction_id):
     elif transaction.type == 'consumption':
         current_balance = _to_float(balance.balance, 0.0) or 0.0
         balance.balance = current_balance + transaction_amount
+        restored_misc = []
+        misc_selections = extract_misc_selections(transaction.description)
+        if misc_selections:
+            try:
+                inbound_result = apply_misc_inbound(
+                    misc_selections,
+                    operator=operator,
+                    reason=f'取消消费回补（交易#{transaction.id}）'
+                )
+                restored_misc = inbound_result.get('details', [])
+            except ValueError as exc:
+                db.session.rollback()
+                return error_response(str(exc), 400)
         log_description = (
             f'取消消费：客户 {customer.name}（{transaction.customer_id}）'
             f'退回 ¥{transaction_amount:.2f}'
         )
+        if restored_misc:
+            log_description = f'{log_description}，杂项回补：{"；".join(restored_misc)}'
         log_type = 'transaction_cancel_consumption'
     elif transaction.type == 'bead_purchase':
         ok, rollback_error = _rollback_bead_purchase_inventory(transaction, operator)

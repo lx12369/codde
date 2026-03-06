@@ -154,6 +154,13 @@ LOG_TYPE_META = {
         'action_label': '清空数据',
         'type_label': '清空数据'
     },
+    'log_rollback': {
+        'module': 'log',
+        'module_label': '日志',
+        'action': 'rollback',
+        'action_label': '回滚',
+        'type_label': '日志回滚'
+    },
     'bead_material_create': {
         'module': 'bead_inventory',
         'module_label': '豆仓',
