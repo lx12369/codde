@@ -56,6 +56,20 @@ LOG_TYPE_META = {
         'action_label': '取消买豆交易',
         'type_label': '取消买豆交易'
     },
+    'transaction_update_timer_consumption': {
+        'module': 'transaction',
+        'module_label': '交易',
+        'action': 'update_timer_consumption',
+        'action_label': '重新结算计时消费',
+        'type_label': '重新结算计时消费'
+    },
+    'transaction_regenerate_timer_consumption': {
+        'module': 'transaction',
+        'module_label': '交易',
+        'action': 'regenerate_timer_consumption',
+        'action_label': '重新结算并重建交易',
+        'type_label': '重新结算并重建交易'
+    },
     'customer_create': {
         'module': 'customer',
         'module_label': '客户',

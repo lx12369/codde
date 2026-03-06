@@ -439,7 +439,7 @@ def update_transaction(transaction_id):
         return error_response('交易记录不存在', 404)
 
     if not _is_timer_consumption_transaction(transaction):
-        return error_response('仅支持修改计时消费记录', 400)
+        return error_response('仅支持重新结算计时消费记录', 400)
 
     data = request.get_json()
     if not data:
@@ -496,13 +496,13 @@ def update_transaction(transaction_id):
                 apply_misc_inbound(
                     before_misc_selections,
                     operator=operator,
-                    reason=f'修改计时消费回补（交易#{transaction.id}）'
+                    reason=f'重新结算计时消费回补（交易#{transaction.id}）'
                 )
             if next_misc_selections:
                 apply_misc_outbound(
                     next_misc_selections,
                     operator=operator,
-                    reason=f'修改计时消费扣减（交易#{transaction.id}）'
+                    reason=f'重新结算计时消费扣减（交易#{transaction.id}）'
                 )
         except ValueError as exc:
             db.session.rollback()
@@ -547,17 +547,17 @@ def update_transaction(transaction_id):
         write_log(
             'transaction_regenerate_timer_consumption' if regenerate else 'transaction_update_timer_consumption',
             (
-                f'重建计时消费：客户 {customer_label}，交易 #{replaced_transaction_id} -> #{result_transaction.id}，'
+                f'重新结算计时消费：客户 {customer_label}，交易 #{replaced_transaction_id} -> #{result_transaction.id}，'
                 f'变更：{"；".join(changes)}'
                 if regenerate
-                else f'修改计时消费：客户 {customer_label}，交易 #{transaction.id}，变更：{"；".join(changes)}'
+                else f'重新结算计时消费：客户 {customer_label}，交易 #{transaction.id}，变更：{"；".join(changes)}'
             ),
             operator=operator
         )
     elif regenerate:
         write_log(
             'transaction_regenerate_timer_consumption',
-            f'重建计时消费：客户 {customer_label}，交易 #{replaced_transaction_id} -> #{result_transaction.id}',
+            f'重新结算计时消费：客户 {customer_label}，交易 #{replaced_transaction_id} -> #{result_transaction.id}',
             operator=operator
         )
 
@@ -573,7 +573,7 @@ def update_transaction(transaction_id):
             'customer_id': result_transaction.customer_id,
             'balance': balance.balance
         },
-        '交易记录已重新生成' if regenerate else '交易记录更新成功'
+        '交易记录已重新结算并生成新记录' if regenerate else '交易记录已重新结算'
     )
 
 

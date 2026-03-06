@@ -2,7 +2,7 @@
 import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '@/api'
-import { formatServerDateTime } from '@/utils/dateTime'
+import { formatServerDateTime, toServerDate } from '@/utils/dateTime'
 import { useBackdropClose } from '@/utils/modalBackdrop'
 import TimerConsumeDialog from '@/components/timers/TimerConsumeDialog.vue'
 import {
@@ -22,6 +22,10 @@ import {
 const route = useRoute()
 const router = useRouter()
 const { onBackdropMouseDown, onBackdropMouseUp } = useBackdropClose()
+const DEFAULT_OVERTIME_RATE_PER_MINUTE = 0.5
+const OVERTIME_START_HOUR = 19
+const OVERTIME_START_MINUTE = 30
+const DAY_MS = 24 * 60 * 60 * 1000
 
 const loading = ref(false)
 const cancellingTransactionId = ref('')
@@ -47,6 +51,7 @@ const showDetailDialog = ref(false)
 const showCancelConfirmDialog = ref(false)
 const selectedTransaction = ref(null)
 const timerEditTargetTransaction = ref(null)
+const timerEditStartTimestamp = ref(null)
 const cancelTargetTransaction = ref(null)
 const cancelConfirmButtonRef = ref(null)
 const timerEditAmountInputRef = ref(null)
@@ -102,6 +107,8 @@ const timerEditForm = reactive({
   extraLargeImages: 0,
   miscSelections: {},
   additionalFee: 0,
+  applyOvertimeFee: false,
+  overtimeFeeMinutes: 0,
   notes: '',
   meituanCustomer: false
 })
@@ -120,6 +127,14 @@ const consumeCurrentBalance = ref(null)
 const consumeBalanceLoading = ref(false)
 const billingRules = ref(normalizeBillingRules())
 let feedbackTimer = null
+
+function getTimerEditConfiguredOvertimeRate() {
+  const configuredRate = Number(billingRules.value?.overtime?.ratePerMinute)
+  if (!Number.isFinite(configuredRate) || configuredRate < 0) {
+    return DEFAULT_OVERTIME_RATE_PER_MINUTE
+  }
+  return configuredRate
+}
 
 const transactionTypes = [
   { value: '', label: '全部' },
@@ -238,6 +253,33 @@ const autoFinalAmount = computed(() =>
   applyDeduction(autoConsumePreview.value.total, autoMeituanDeduction.value)
 )
 
+const timerEditOvertimeRatePerMinute = computed(() => getTimerEditConfiguredOvertimeRate())
+
+const timerEditAutoOvertimeMinutes = computed(() => {
+  const startMs = Number(timerEditStartTimestamp.value)
+  const elapsedMinutes = Math.max(0, Math.floor(Number(timerEditForm.elapsedMinutes) || 0))
+  if (elapsedMinutes <= 0) return 0
+
+  if (!Number.isFinite(startMs)) {
+    return Math.max(0, Math.floor(Number(timerEditForm.overtimeFeeMinutes) || 0))
+  }
+
+  const endMs = startMs + (elapsedMinutes * 60 * 1000)
+  return calculateOvertimeMinutesByRange(startMs, endMs)
+})
+
+const timerEditOvertimeFee = computed(() => {
+  if (!timerEditForm.applyOvertimeFee) return 0
+  const minutes = timerEditAutoOvertimeMinutes.value
+  const rate = timerEditOvertimeRatePerMinute.value
+  return Math.round(((minutes * rate) + Number.EPSILON) * 100) / 100
+})
+
+const timerEditTotalAdditionalFee = computed(() => {
+  const manualAdditionalFee = Math.max(0, Number(timerEditForm.additionalFee) || 0)
+  return Math.round(((manualAdditionalFee + timerEditOvertimeFee.value) + Number.EPSILON) * 100) / 100
+})
+
 const timerEditPreview = computed(() =>
   calculateConsumptionAmount(
     {
@@ -250,7 +292,7 @@ const timerEditPreview = computed(() =>
       extraSmallImages: timerEditForm.extraSmallImages,
       extraLargeImages: timerEditForm.extraLargeImages,
       miscSelections: timerEditForm.miscSelections,
-      additionalFee: timerEditForm.additionalFee
+      additionalFee: timerEditTotalAdditionalFee.value
     },
     billingRules.value
   )
@@ -265,6 +307,16 @@ const timerEditMeituanDeduction = computed(() => (
 const timerEditFinalAmount = computed(() =>
   applyDeduction(timerEditPreview.value.total, timerEditMeituanDeduction.value)
 )
+
+const timerEditEndTimestamp = computed(() => {
+  const startMs = Number(timerEditStartTimestamp.value)
+  if (!Number.isFinite(startMs)) return null
+  const elapsedMinutes = Math.max(0, Math.floor(Number(timerEditForm.elapsedMinutes) || 0))
+  return startMs + (elapsedMinutes * 60 * 1000)
+})
+
+const timerEditStartTimeLabel = computed(() => formatTimestampLabel(timerEditStartTimestamp.value))
+const timerEditEndTimeLabel = computed(() => formatTimestampLabel(timerEditEndTimestamp.value))
 
 const consumeSubmitLabel = computed(() => {
   if (consumeMode.value === 'manual') return '确认消费'
@@ -336,9 +388,24 @@ function canEditTimerConsumptionTransaction(transaction = {}) {
   return Boolean(normalized?.id) && isTimerConsumptionTransaction(normalized)
 }
 
+const MISC_MARKER_PATTERN = /\s*\[\[MISC_B64:[A-Za-z0-9_-]+\]\]\s*$/
+const TIMER_OVERTIME_NOTE_PATTERN = /加班费用[¥￥]\s*(\d+(?:\.\d+)?)\s*[（(]\s*(\d+)\s*分钟\s*[，,]\s*[¥￥]\s*(\d+(?:\.\d+)?)\s*\/\s*分钟\s*[）)]/
+const TIMER_OVERTIME_CANCEL_NOTE_PATTERN = /已取消加班费用[（(]\s*(\d+)\s*分钟\s*[，,]\s*原[¥￥]\s*(\d+(?:\.\d+)?)\s*[）)]/
+
+function stripMiscMarkerFromDescription(description = '') {
+  return String(description || '').replace(MISC_MARKER_PATTERN, '').trim()
+}
+
+function splitTimerDescriptionSections(description = '') {
+  return stripMiscMarkerFromDescription(description)
+    .split(/\s+-\s+/)
+    .map((segment) => String(segment || '').trim())
+    .filter(Boolean)
+}
+
 function parseElapsedMinutesFromDescription(description = '') {
-  const text = String(description || '')
-  const matched = text.match(/(\d+)\s*小时(\d+)\s*分钟/)
+  const text = stripMiscMarkerFromDescription(description)
+  const matched = text.match(/(\d+)\s*小时\s*(\d+)\s*分钟/)
   if (!matched) return 60
   const hours = Number.parseInt(matched[1], 10)
   const minutes = Number.parseInt(matched[2], 10)
@@ -347,17 +414,168 @@ function parseElapsedMinutesFromDescription(description = '') {
 }
 
 function inferTimerBillingTypeFromDescription(description = '') {
-  const text = String(description || '')
-  if (text.includes('计时消费(工作日)')) return 'weekday'
-  if (text.includes('计时消费(周末)')) return 'weekend'
+  const text = stripMiscMarkerFromDescription(description)
+  if (/计时消费[（(]工作日[）)]/.test(text)) return 'weekday'
+  if (/计时消费[（(]周末[）)]/.test(text)) return 'weekend'
   return 'limited'
 }
 
-function inferTimerNotesFromDescription(description = '') {
-  const text = String(description || '')
-  const matched = text.match(/备注:\s*(.+)$/)
-  if (!matched) return ''
-  return String(matched[1] || '').trim()
+function escapeRegex(rawText = '') {
+  return String(rawText || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function parseTimerDetailSectionFromDescription(description = '') {
+  const sections = splitTimerDescriptionSections(description)
+  if (sections.length <= 1) return ''
+  return sections
+    .slice(1)
+    .filter((segment) => !/^\d+\s*小时\s*\d+\s*分钟$/.test(segment))
+    .filter((segment) => !segment.startsWith('备注:'))
+    .join('，')
+}
+
+function inferTimerDurationFromDescription(detailSection = '', elapsedMinutes = 60) {
+  const detail = String(detailSection || '')
+  if (detail.includes('限时2小时')) return '2'
+  if (detail.includes('限时1小时')) return '1'
+  return Math.max(0, Math.floor(Number(elapsedMinutes) || 0)) < 90 ? '1' : '2'
+}
+
+function inferTimerOvertimeMinutesFromDescription(detailSection = '', elapsedMinutes = 60, duration = '1') {
+  const detail = String(detailSection || '')
+  const matched = detail.match(/超时\s*(\d+)\s*分钟/)
+  if (matched) {
+    const minutes = Number.parseInt(matched[1], 10)
+    if (Number.isFinite(minutes) && minutes >= 0) return minutes
+  }
+
+  const totalMinutes = Math.max(0, Math.floor(Number(elapsedMinutes) || 0))
+  if (duration === '2') return Math.max(0, totalMinutes - 120)
+  if (totalMinutes <= 60) return 0
+  if (totalMinutes < 90) return totalMinutes - 60
+  if (totalMinutes <= 120) return 0
+  return totalMinutes - 120
+}
+
+function inferTimerWeekdayTypeFromDetail(detailSection = '') {
+  const detail = String(detailSection || '')
+  if (detail.includes('工作日双人不限时不限板')) return 'doubleUnlimited'
+  if (detail.includes('工作日单人不限时限板')) return 'singleLimited'
+  return 'singleUnlimited'
+}
+
+function inferTimerWeekendTypeFromDetail(detailSection = '') {
+  const detail = String(detailSection || '')
+  if (detail.includes('周末双人不限时不限板')) return 'doubleUnlimited'
+  if (detail.includes('周末单人不限时限板')) return 'singleLimited'
+  return 'singleUnlimited'
+}
+
+function parseCountFromDetail(detailSection = '', label = '') {
+  const escapedLabel = escapeRegex(label)
+  const matched = String(detailSection || '').match(new RegExp(`${escapedLabel}\\s*(\\d+)\\s*张`))
+  if (!matched) return 0
+  const count = Number.parseInt(matched[1], 10)
+  return Number.isFinite(count) && count >= 0 ? count : 0
+}
+
+function parseAdditionalFeeFromDetail(detailSection = '') {
+  const matched = String(detailSection || '').match(/附加费用[¥￥]\s*(\d+(?:\.\d+)?)/)
+  if (!matched) return 0
+  const fee = Number.parseFloat(matched[1])
+  return Number.isFinite(fee) && fee >= 0 ? fee : 0
+}
+
+function inferTimerNotesStateFromDescription(description = '') {
+  const sections = splitTimerDescriptionSections(description)
+  const noteSection = sections.find((segment) => segment.startsWith('备注:')) || ''
+  const rawNotes = noteSection.replace(/^备注:\s*/, '').trim()
+  const overtimeAppliedMatch = rawNotes.match(TIMER_OVERTIME_NOTE_PATTERN)
+  const overtimeCanceledMatch = rawNotes.match(TIMER_OVERTIME_CANCEL_NOTE_PATTERN)
+
+  let applyOvertimeFee = false
+  let overtimeFee = 0
+  let overtimeFeeMinutes = 0
+  let overtimeRatePerMinute = 0
+  if (overtimeAppliedMatch) {
+    applyOvertimeFee = true
+    overtimeFee = Math.max(0, Number.parseFloat(overtimeAppliedMatch[1]) || 0)
+    overtimeFeeMinutes = Math.max(0, Number.parseInt(overtimeAppliedMatch[2], 10) || 0)
+    overtimeRatePerMinute = Math.max(0, Number.parseFloat(overtimeAppliedMatch[3]) || 0)
+  } else if (overtimeCanceledMatch) {
+    applyOvertimeFee = false
+    overtimeFee = Math.max(0, Number.parseFloat(overtimeCanceledMatch[2]) || 0)
+    overtimeFeeMinutes = Math.max(0, Number.parseInt(overtimeCanceledMatch[1], 10) || 0)
+  }
+
+  const meituanPattern = /(^|[；;，,\s])美团客户[（(][^）)]*[）)]/g
+  const meituanCustomer = rawNotes.includes('美团客户') || sections.join('；').includes('美团客户')
+  const notes = rawNotes
+    .replace(TIMER_OVERTIME_NOTE_PATTERN, '')
+    .replace(TIMER_OVERTIME_CANCEL_NOTE_PATTERN, '')
+    .replace(meituanPattern, '$1')
+    .replace(/[；;，,\s]+$/g, '')
+    .replace(/^[；;，,\s]+/g, '')
+    .trim()
+
+  return {
+    notes,
+    meituanCustomer,
+    applyOvertimeFee,
+    overtimeFee,
+    overtimeFeeMinutes,
+    overtimeRatePerMinute
+  }
+}
+
+function calculateOvertimeMinutesByRange(startMs, endMs) {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return 0
+
+  let cursor = startMs
+  let overtimeMs = 0
+
+  while (cursor < endMs) {
+    const dayStart = new Date(cursor)
+    dayStart.setHours(0, 0, 0, 0)
+
+    const dayStartMs = dayStart.getTime()
+    const nextDayStartMs = dayStartMs + DAY_MS
+    const segmentEnd = Math.min(endMs, nextDayStartMs)
+
+    const overtimeStart = new Date(dayStartMs)
+    overtimeStart.setHours(OVERTIME_START_HOUR, OVERTIME_START_MINUTE, 0, 0)
+    const overtimeStartMs = overtimeStart.getTime()
+
+    const overlapStart = Math.max(cursor, overtimeStartMs)
+    if (segmentEnd > overlapStart) {
+      overtimeMs += segmentEnd - overlapStart
+    }
+
+    cursor = segmentEnd
+  }
+
+  return Math.floor(overtimeMs / 60000)
+}
+
+function resolveTimerEditStartTimestamp(transaction = null, elapsedMinutes = 0) {
+  const settledDate = toServerDate(transaction?.createdAt ?? transaction?.created_at ?? transaction?.transaction_time)
+  if (!settledDate) return null
+  const elapsedMs = Math.max(0, Math.floor(Number(elapsedMinutes) || 0)) * 60 * 1000
+  return settledDate.getTime() - elapsedMs
+}
+
+function formatTimestampLabel(timestampMs) {
+  const value = Number(timestampMs)
+  if (!Number.isFinite(value)) return '-'
+  return new Date(value).toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  })
 }
 
 function formatFilterDateLabel(value) {
@@ -713,25 +931,64 @@ function resetConsumeForms(customerId = '') {
 }
 
 function resetTimerEditForm(transaction = null) {
-  const description = String(transaction?.description || '').trim()
+  const description = stripMiscMarkerFromDescription(transaction?.description)
   const inferredBillingType = inferTimerBillingTypeFromDescription(description)
   const inferredElapsedMinutes = parseElapsedMinutesFromDescription(description)
-  const inferredNotes = inferTimerNotesFromDescription(description)
+  const detailSection = parseTimerDetailSectionFromDescription(description)
+  const inferredDuration = inferTimerDurationFromDescription(detailSection, inferredElapsedMinutes)
+  const inferredOvertimeMinutes = inferTimerOvertimeMinutesFromDescription(
+    detailSection,
+    inferredElapsedMinutes,
+    inferredDuration
+  )
+  const inferredWeekdayType = inferTimerWeekdayTypeFromDetail(detailSection)
+  const inferredWeekendType = inferTimerWeekendTypeFromDetail(detailSection)
+  const inferredNotesState = inferTimerNotesStateFromDescription(description)
+  const inferredAdditionalFee = parseAdditionalFeeFromDetail(detailSection)
+  const inferredOvertimeFee = inferredNotesState.applyOvertimeFee
+    ? Math.max(0, Number(inferredNotesState.overtimeFee) || 0)
+    : 0
 
   timerEditForm.elapsedMinutes = Math.max(0, Math.floor(Number(inferredElapsedMinutes) || 0))
   timerEditForm.billingType = inferredBillingType
-  timerEditForm.duration = '1'
-  timerEditForm.weekdayType = 'singleUnlimited'
-  timerEditForm.weekendType = 'singleUnlimited'
-  timerEditForm.overtimeMinutes = 0
-  timerEditForm.largeImages = 0
-  timerEditForm.extraSmallImages = 0
-  timerEditForm.extraLargeImages = 0
-  timerEditForm.additionalFee = 0
-  timerEditForm.notes = inferredNotes
-  timerEditForm.meituanCustomer = description.includes('美团客户')
+  timerEditForm.duration = inferredDuration
+  timerEditForm.weekdayType = inferredWeekdayType
+  timerEditForm.weekendType = inferredWeekendType
+  timerEditForm.overtimeMinutes = inferredBillingType === 'limited' ? inferredOvertimeMinutes : 0
+  timerEditForm.largeImages = parseCountFromDetail(detailSection, '大图')
+  timerEditForm.extraSmallImages = parseCountFromDetail(detailSection, '超量小图')
+  timerEditForm.extraLargeImages = parseCountFromDetail(detailSection, '超量大图')
+  timerEditForm.additionalFee = Math.max(0, Math.round(((inferredAdditionalFee - inferredOvertimeFee) + Number.EPSILON) * 100) / 100)
+  timerEditForm.applyOvertimeFee = inferredNotesState.applyOvertimeFee
+  timerEditForm.overtimeFeeMinutes = inferredNotesState.overtimeFeeMinutes
+  timerEditForm.notes = inferredNotesState.notes
+  timerEditForm.meituanCustomer = inferredNotesState.meituanCustomer
+  timerEditStartTimestamp.value = resolveTimerEditStartTimestamp(transaction, timerEditForm.elapsedMinutes)
   syncTimerEditMiscSelections(transaction?.miscSelections || {})
   timerEditErrors.value = {}
+}
+
+function syncTimerEditLimitedOvertimeFromElapsed() {
+  if (timerEditForm.billingType !== 'limited') {
+    timerEditForm.overtimeMinutes = 0
+    return
+  }
+
+  const totalMinutes = Math.max(0, Math.floor(Number(timerEditForm.elapsedMinutes) || 0))
+  if (timerEditForm.duration === '2') {
+    timerEditForm.overtimeMinutes = Math.max(0, totalMinutes - 120)
+    return
+  }
+
+  if (totalMinutes <= 60) {
+    timerEditForm.overtimeMinutes = 0
+  } else if (totalMinutes < 90) {
+    timerEditForm.overtimeMinutes = totalMinutes - 60
+  } else if (totalMinutes <= 120) {
+    timerEditForm.overtimeMinutes = 0
+  } else {
+    timerEditForm.overtimeMinutes = totalMinutes - 120
+  }
 }
 
 async function handleFilter() {
@@ -898,9 +1155,24 @@ function validateTimerEditForm() {
   if (Object.keys(errors).length > 0) return null
 
   const baseNotes = String(timerEditForm.notes || '').trim()
-  const notes = timerEditForm.meituanCustomer
-    ? `${baseNotes}${baseNotes ? '；' : ''}美团客户(基础费用抽成￥${formatAmount(timerEditMeituanDeduction.value)})`
-    : baseNotes
+  const notesParts = []
+  if (baseNotes) {
+    notesParts.push(baseNotes)
+  }
+
+  const normalizedOvertimeFeeMinutes = timerEditAutoOvertimeMinutes.value
+  const normalizedOvertimeRate = timerEditOvertimeRatePerMinute.value
+  if (timerEditForm.applyOvertimeFee && normalizedOvertimeFeeMinutes > 0 && normalizedOvertimeRate > 0) {
+    notesParts.push(
+      `加班费用￥${formatAmount(timerEditOvertimeFee.value)}（${normalizedOvertimeFeeMinutes}分钟，￥${formatAmount(normalizedOvertimeRate)}/分钟）`
+    )
+  }
+
+  if (timerEditForm.meituanCustomer) {
+    notesParts.push(`美团客户(基础费用抽成￥${formatAmount(timerEditMeituanDeduction.value)})`)
+  }
+
+  const notes = notesParts.join('；')
 
   const description = buildConsumptionDescription(
     {
@@ -1141,15 +1413,15 @@ async function confirmTimerEditTransaction() {
       showFeedback(
         'success',
         replacedId
-          ? `已重建交易记录 #${nextTransaction.id}（原 #${replacedId}）`
-          : `已修改计时消费 #${nextTransaction.id}`
+          ? `已重新结算并生成交易 #${nextTransaction.id}（原 #${replacedId}）`
+          : `已重新结算计时消费 #${nextTransaction.id}`
       )
     } else {
-      showFeedback('success', '计时消费修改成功')
+      showFeedback('success', '计时消费重新结算成功')
     }
   } catch (error) {
     console.error('Failed to update timer consumption transaction:', error)
-    showFeedback('error', error?.response?.data?.message || error?.message || '修改计时消费失败')
+    showFeedback('error', error?.response?.data?.message || error?.message || '重新结算计时消费失败')
   } finally {
     editingTransactionId.value = ''
   }
@@ -1342,6 +1614,14 @@ watch(
   async (customerId) => {
     if (!showConsumeDialog.value) return
     await syncConsumeBalance(customerId)
+  }
+)
+
+watch(
+  () => [timerEditForm.elapsedMinutes, timerEditForm.billingType, timerEditForm.duration],
+  () => {
+    if (!showTimerEditDialog.value) return
+    syncTimerEditLimitedOvertimeFromElapsed()
   }
 )
 
@@ -1581,7 +1861,7 @@ onUnmounted(() => {
                     :disabled="isEditingTransaction(transaction.id)"
                     class="text-amber-600 hover:text-amber-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {{ isEditingTransaction(transaction.id) ? '保存中...' : '修改计时' }}
+                    {{ isEditingTransaction(transaction.id) ? '结算中...' : '重新结算' }}
                   </button>
                   <button
                     v-if="canCancelTransaction(transaction.type)"
@@ -1668,7 +1948,7 @@ onUnmounted(() => {
                 :disabled="isEditingTransaction(transaction.id)"
                 class="flex-1 min-w-[90px] px-3 py-2 text-sm rounded-lg border border-amber-200 text-amber-700 bg-amber-50 hover:bg-amber-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {{ isEditingTransaction(transaction.id) ? '保存中...' : '修改计时' }}
+                {{ isEditingTransaction(transaction.id) ? '结算中...' : '重新结算' }}
               </button>
               <button
                 v-if="canCancelTransaction(transaction.type)"
@@ -2241,7 +2521,7 @@ onUnmounted(() => {
       >
         <div class="w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-slate-100 max-h-[90vh] overflow-y-auto">
           <div class="px-6 py-5 border-b border-slate-100">
-            <h3 class="text-lg font-semibold text-slate-900">修改计时消费（重建交易）</h3>
+            <h3 class="text-lg font-semibold text-slate-900">重新结算计时消费（生成新交易）</h3>
             <p class="mt-2 text-sm text-slate-600">交易ID：#{{ timerEditTargetTransaction.id }}</p>
             <p class="mt-1 text-xs text-slate-500">当前金额：￥{{ formatAmount(timerEditTargetTransaction.amount) }}</p>
           </div>
@@ -2356,7 +2636,7 @@ onUnmounted(() => {
                 />
               </div>
               <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">附加费用</label>
+                <label class="block text-sm font-medium text-gray-700 mb-1">手动附加费用</label>
                 <input
                   v-model.number="timerEditForm.additionalFee"
                   type="number"
@@ -2365,6 +2645,29 @@ onUnmounted(() => {
                   class="w-full px-3 py-2 border border-gray-300 rounded-lg"
                 />
               </div>
+            </div>
+
+            <div class="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 space-y-3">
+              <label class="inline-flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  v-model="timerEditForm.applyOvertimeFee"
+                  type="checkbox"
+                  class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                >
+                启用加班费（计入附加费用）
+              </label>
+
+              <div v-if="timerEditForm.applyOvertimeFee" class="space-y-1 text-xs text-slate-600">
+                <p v-if="timerEditStartTimestamp !== null">计时开始：{{ timerEditStartTimeLabel }}</p>
+                <p v-if="timerEditStartTimestamp !== null">预计结束：{{ timerEditEndTimeLabel }}</p>
+                <p v-if="timerEditStartTimestamp !== null">加班分钟（自动）：{{ timerEditAutoOvertimeMinutes }}</p>
+                <p v-else>未获取到计时开始时间，沿用历史加班分钟：{{ timerEditAutoOvertimeMinutes }}</p>
+                <p>加班单价：￥{{ formatAmount(timerEditOvertimeRatePerMinute) }}/分钟</p>
+              </div>
+
+              <p class="text-xs text-slate-600">
+                预计加班费：￥{{ formatAmount(timerEditOvertimeFee) }}
+              </p>
             </div>
 
             <div v-if="enabledMiscItems.length > 0" class="space-y-3">
@@ -2426,7 +2729,9 @@ onUnmounted(() => {
               <p>超时费用：￥{{ formatAmount(timerEditPreview.overtimeFee) }}</p>
               <p>耗材费用：￥{{ formatAmount(timerEditPreview.materialFee) }}</p>
               <p>杂项费用：￥{{ formatAmount(timerEditPreview.miscFee) }}</p>
-              <p>附加费用：￥{{ formatAmount(timerEditPreview.additionalFee) }}</p>
+              <p>手动附加：￥{{ formatAmount(timerEditForm.additionalFee) }}</p>
+              <p v-if="timerEditForm.applyOvertimeFee">加班费用：￥{{ formatAmount(timerEditOvertimeFee) }}</p>
+              <p>附加费用合计：￥{{ formatAmount(timerEditPreview.additionalFee) }}</p>
               <p v-if="timerEditForm.meituanCustomer">美团抽成：-￥{{ formatAmount(timerEditMeituanDeduction) }}</p>
               <p class="font-semibold text-base">
                 重算金额：￥{{ formatAmount(timerEditForm.meituanCustomer ? timerEditFinalAmount : timerEditPreview.total) }}
@@ -2451,7 +2756,7 @@ onUnmounted(() => {
               :disabled="isEditingTransaction(timerEditTargetTransaction.id)"
               class="px-4 py-2 rounded-lg bg-amber-600 text-white hover:bg-amber-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {{ isEditingTransaction(timerEditTargetTransaction.id) ? '重建中...' : '确认重建交易' }}
+              {{ isEditingTransaction(timerEditTargetTransaction.id) ? '结算中...' : '确认重新结算' }}
             </button>
           </div>
         </div>
@@ -2567,7 +2872,7 @@ onUnmounted(() => {
               :disabled="isEditingTransaction(selectedTransaction.id)"
               class="px-4 py-2 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {{ isEditingTransaction(selectedTransaction.id) ? '保存中...' : '修改计时消费' }}
+              {{ isEditingTransaction(selectedTransaction.id) ? '结算中...' : '重新结算计时消费' }}
             </button>
             <span v-else class="flex-1"></span>
             <button
