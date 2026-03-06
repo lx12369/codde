@@ -24,6 +24,7 @@ const stats = ref({
   today_consumptions: 0,
   today_consumption_people: 0,
   today_consumption_amount: 0,
+  today_expense_amount: 0,
   today_bead_loss_amount: 0,
   today_net_income: 0,
   total_transactions: 0,
@@ -149,9 +150,10 @@ const overviewCards = computed(() => ([
 const amountInsight = computed(() => {
   const recharge = stats.value.today_amount
   const consumeRevenue = stats.value.today_consumption_amount
+  const expenseAmount = stats.value.today_expense_amount
   const beadLoss = stats.value.today_bead_loss_amount
   const total = recharge + consumeRevenue
-  const netIncome = consumeRevenue - beadLoss
+  const netIncome = consumeRevenue - expenseAmount - beadLoss
 
   const lossRate = consumeRevenue > 0
     ? Math.round((beadLoss / consumeRevenue) * 100)
@@ -163,14 +165,15 @@ const amountInsight = computed(() => {
     rechargePercent: total > 0 ? Math.round((recharge / total) * 100) : 0,
     consumePercent: total > 0 ? Math.round((consumeRevenue / total) * 100) : 0,
     totalFlow: total,
+    expenseAmount,
     beadLoss,
     netIncome,
     lossRate: Math.min(100, Math.max(0, lossRate)),
-    flowHealth: consumeRevenue <= 0 && beadLoss <= 0
+    flowHealth: consumeRevenue <= 0 && expenseAmount <= 0 && beadLoss <= 0
       ? '今日暂无经营流水'
       : netIncome >= 0
-        ? '已覆盖豆仓损耗'
-        : '损耗高于消费收益'
+        ? '已覆盖支出与损耗'
+        : '支出与损耗高于消费收益'
   }
 })
 
@@ -340,6 +343,7 @@ function applyStatsPayload(payload) {
     today_consumptions: toNumber(payload.today_consumptions),
     today_consumption_people: toNumber(payload.today_consumption_people),
     today_consumption_amount: toNumber(payload.today_consumption_amount),
+    today_expense_amount: toNumber(payload.today_expense_amount),
     today_bead_loss_amount: toNumber(payload.today_bead_loss_amount),
     today_net_income: toNumber(payload.today_net_income),
     total_transactions: toNumber(payload.total_transactions),
@@ -829,6 +833,7 @@ onMounted(() => refreshData())
           </div>
           <p class="bead-insight-card__summary mt-3 text-sm text-slate-600">
             经营流水 <span class="font-semibold text-slate-900">{{ formatAmount(amountInsight.totalFlow) }}</span>，
+            今日支出 <span class="font-semibold text-slate-900">{{ formatAmount(amountInsight.expenseAmount) }}</span>，
             豆仓损耗 <span class="font-semibold text-slate-900">{{ formatAmount(amountInsight.beadLoss) }}</span>，
             净收益 <span class="font-semibold text-slate-900">{{ formatSignedAmount(amountInsight.netIncome) }}</span>
             （{{ amountInsight.flowHealth }}，损耗率 {{ amountInsight.lossRate }}%）。

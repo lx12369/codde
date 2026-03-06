@@ -1,14 +1,16 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import api from '@/api'
+import api, { transactionApi } from '@/api'
 import { formatServerDateTime, toServerDate } from '@/utils/dateTime'
 import { useBackdropClose } from '@/utils/modalBackdrop'
 import TimerConsumeDialog from '@/components/timers/TimerConsumeDialog.vue'
 import {
   createTimerConsumeForm,
   validateTimerConsumeForm as validateSharedTimerConsumeForm,
-  buildTimerConsumeRequestPayload
+  buildTimerConsumeRequestPayload,
+  getDefaultTimerPackagePlan,
+  getTimerPackagePlanOptions
 } from '@/utils/timerConsume'
 import {
   normalizeBillingRules,
@@ -46,6 +48,7 @@ const filterForm = reactive({
 
 const showRechargeDialog = ref(false)
 const showConsumeDialog = ref(false)
+const showExpenseDialog = ref(false)
 const showTimerEditDialog = ref(false)
 const showDetailDialog = ref(false)
 const showCancelConfirmDialog = ref(false)
@@ -57,6 +60,7 @@ const cancelConfirmButtonRef = ref(null)
 const timerEditAmountInputRef = ref(null)
 const rechargeCustomerSelectRef = ref(null)
 const manualConsumeCustomerSelectRef = ref(null)
+const expenseAmountInputRef = ref(null)
 const detailCloseButtonRef = ref(null)
 const dialogTriggerStack = ref([])
 
@@ -66,6 +70,11 @@ const rechargeForm = reactive({
   bonusAmount: '',
   paymentMethod: 'cash',
   activityId: ''
+})
+
+const expenseForm = reactive({
+  amount: '',
+  description: ''
 })
 
 const consumeMode = ref('manual')
@@ -82,8 +91,8 @@ const autoConsumeForm = reactive({
   customerId: '',
   billingType: 'limited',
   duration: '1',
-  weekdayType: 'singleUnlimited',
-  weekendType: 'singleUnlimited',
+  weekdayType: getDefaultTimerPackagePlan('weekday'),
+  weekendType: getDefaultTimerPackagePlan('weekend'),
   overtimeMinutes: 0,
   largeImages: 0,
   extraSmallImages: 0,
@@ -99,8 +108,8 @@ const timerEditForm = reactive({
   elapsedMinutes: 60,
   billingType: 'limited',
   duration: '1',
-  weekdayType: 'singleUnlimited',
-  weekendType: 'singleUnlimited',
+  weekdayType: getDefaultTimerPackagePlan('weekday'),
+  weekendType: getDefaultTimerPackagePlan('weekend'),
   overtimeMinutes: 0,
   largeImages: 0,
   extraSmallImages: 0,
@@ -114,6 +123,7 @@ const timerEditForm = reactive({
 })
 
 const rechargeErrors = ref({})
+const expenseErrors = ref({})
 const manualConsumeErrors = ref({})
 const autoConsumeErrors = ref({})
 const timerConsumeErrors = ref({})
@@ -140,6 +150,7 @@ const transactionTypes = [
   { value: '', label: '全部' },
   { value: 'recharge', label: '充值' },
   { value: 'consumption', label: '消费' },
+  { value: 'expense', label: '经营支出' },
   { value: 'bead_purchase', label: '买豆支出' }
 ]
 
@@ -205,6 +216,9 @@ const enabledMiscItems = computed(() => {
       return String(left.name || '').localeCompare(String(right.name || ''), 'zh-CN')
     })
 })
+
+const weekdayTypeOptions = computed(() => getTimerPackagePlanOptions('weekday', billingRules.value))
+const weekendTypeOptions = computed(() => getTimerPackagePlanOptions('weekend', billingRules.value))
 
 const autoConsumePreview = computed(() =>
   calculateConsumptionAmount(
@@ -457,18 +471,24 @@ function inferTimerOvertimeMinutesFromDescription(detailSection = '', elapsedMin
   return totalMinutes - 120
 }
 
-function inferTimerWeekdayTypeFromDetail(detailSection = '') {
+function inferTimerPlanCodeFromDetail(dayType = 'weekday', detailSection = '') {
   const detail = String(detailSection || '')
-  if (detail.includes('工作日双人不限时不限板')) return 'doubleUnlimited'
-  if (detail.includes('工作日单人不限时限板')) return 'singleLimited'
-  return 'singleUnlimited'
-}
+  const options = getTimerPackagePlanOptions(dayType, billingRules.value, { includeDisabled: true })
+    .slice()
+    .sort((left, right) => String(right?.label || '').length - String(left?.label || '').length)
 
-function inferTimerWeekendTypeFromDetail(detailSection = '') {
-  const detail = String(detailSection || '')
-  if (detail.includes('周末双人不限时不限板')) return 'doubleUnlimited'
-  if (detail.includes('周末单人不限时限板')) return 'singleLimited'
-  return 'singleUnlimited'
+  const matched = options.find((item) => {
+    const label = String(item?.label || '').trim()
+    return label && detail.includes(label)
+  })
+  if (matched?.value) return matched.value
+
+  if (detail.includes(`${dayType === 'weekend' ? '周末' : '工作日'}单人不限时限板`)) {
+    const limited = options.find((item) => String(item?.label || '').includes('单人不限时限板'))
+    if (limited?.value) return limited.value
+  }
+
+  return getDefaultTimerPackagePlan(dayType, billingRules.value)
 }
 
 function parseCountFromDetail(detailSection = '', label = '') {
@@ -597,7 +617,7 @@ function formatFilterDateLabel(value) {
 }
 
 function applyTimerConsumeForm(nextForm = {}) {
-  Object.assign(timerConsumeForm, createTimerConsumeForm(), nextForm)
+  Object.assign(timerConsumeForm, createTimerConsumeForm('', billingRules.value), nextForm)
 }
 
 
@@ -911,8 +931,8 @@ function resetConsumeForms(customerId = '') {
   autoConsumeForm.customerId = customerId
   autoConsumeForm.billingType = 'limited'
   autoConsumeForm.duration = '1'
-  autoConsumeForm.weekdayType = 'singleUnlimited'
-  autoConsumeForm.weekendType = 'singleUnlimited'
+  autoConsumeForm.weekdayType = getDefaultTimerPackagePlan('weekday', billingRules.value)
+  autoConsumeForm.weekendType = getDefaultTimerPackagePlan('weekend', billingRules.value)
   autoConsumeForm.overtimeMinutes = 0
   autoConsumeForm.largeImages = 0
   autoConsumeForm.extraSmallImages = 0
@@ -922,7 +942,7 @@ function resetConsumeForms(customerId = '') {
   autoConsumeForm.notes = ''
   autoConsumeForm.meituanCustomer = false
 
-  Object.assign(timerConsumeForm, createTimerConsumeForm(customerId))
+  Object.assign(timerConsumeForm, createTimerConsumeForm(customerId, billingRules.value))
   syncTimerMiscSelections({})
 
   manualConsumeErrors.value = {}
@@ -941,8 +961,8 @@ function resetTimerEditForm(transaction = null) {
     inferredElapsedMinutes,
     inferredDuration
   )
-  const inferredWeekdayType = inferTimerWeekdayTypeFromDetail(detailSection)
-  const inferredWeekendType = inferTimerWeekendTypeFromDetail(detailSection)
+  const inferredWeekdayType = inferTimerPlanCodeFromDetail('weekday', detailSection)
+  const inferredWeekendType = inferTimerPlanCodeFromDetail('weekend', detailSection)
   const inferredNotesState = inferTimerNotesStateFromDescription(description)
   const inferredAdditionalFee = parseAdditionalFeeFromDetail(detailSection)
   const inferredOvertimeFee = inferredNotesState.applyOvertimeFee
@@ -1028,6 +1048,12 @@ function closeConsumeDialog(force = false) {
   restoreDialogTrigger()
 }
 
+function closeExpenseDialog(force = false) {
+  if (!force && loading.value) return
+  showExpenseDialog.value = false
+  restoreDialogTrigger()
+}
+
 function closeDetailDialog(force = false) {
   if (!force && loading.value) return
   showDetailDialog.value = false
@@ -1066,6 +1092,16 @@ async function openConsumeDialog(customerId = '') {
   await Promise.all([fetchBillingRules(), syncConsumeBalance(validCustomerId)])
 }
 
+async function openExpenseDialog() {
+  rememberDialogTrigger()
+  expenseForm.amount = ''
+  expenseForm.description = ''
+  expenseErrors.value = {}
+  showExpenseDialog.value = true
+  await nextTick()
+  expenseAmountInputRef.value?.focus()
+}
+
 function validateRechargeForm() {
   const errors = {}
   if (!rechargeForm.customerId) {
@@ -1077,6 +1113,18 @@ function validateRechargeForm() {
     errors.amount = '请输入有效金额'
   }
   rechargeErrors.value = errors
+  return Object.keys(errors).length === 0
+}
+
+function validateExpenseForm() {
+  const errors = {}
+  if (!expenseForm.amount || parseFloat(expenseForm.amount) <= 0) {
+    errors.amount = '请输入有效金额'
+  }
+  if (!expenseForm.description?.trim()) {
+    errors.description = '请输入备注'
+  }
+  expenseErrors.value = errors
   return Object.keys(errors).length === 0
 }
 
@@ -1125,7 +1173,7 @@ function validateAutoConsumeForm() {
 }
 
 function validateTimerConsumeFormState() {
-  const { isValid, errors } = validateSharedTimerConsumeForm(timerConsumeForm, validCustomers.value)
+  const { isValid, errors } = validateSharedTimerConsumeForm(timerConsumeForm, validCustomers.value, billingRules.value)
   const miscErrors = collectTimerMiscErrors(timerConsumeForm.miscSelections)
   if (miscErrors.length > 0) {
     errors.misc = miscErrors[0]
@@ -1216,6 +1264,26 @@ async function submitRecharge() {
   }
 }
 
+async function submitExpense() {
+  if (!validateExpenseForm()) return
+
+  loading.value = true
+  try {
+    await transactionApi.createExpense({
+      amount: parseFloat(expenseForm.amount),
+      description: expenseForm.description.trim()
+    })
+    closeExpenseDialog(true)
+    await fetchTransactions()
+    showFeedback('success', '支出记录已创建。')
+  } catch (error) {
+    console.error('Failed to create expense:', error)
+    showFeedback('error', error?.response?.data?.message || error?.message || '创建支出记录失败')
+  } finally {
+    loading.value = false
+  }
+}
+
 async function submitManualConsume() {
   if (!validateManualConsumeForm()) return
 
@@ -1286,7 +1354,7 @@ async function submitAutoConsume() {
 async function submitTimerConsume() {
   if (!validateTimerConsumeFormState()) return
 
-  await api.post('/active-timers', buildTimerConsumeRequestPayload(timerConsumeForm))
+  await api.post('/active-timers', buildTimerConsumeRequestPayload(timerConsumeForm, billingRules.value))
 }
 
 async function submitConsumeByMode() {
@@ -1431,6 +1499,7 @@ function getTransactionTypeLabel(type) {
   const typeMap = {
     recharge: '充值',
     consumption: '消费',
+    expense: '经营支出',
     bead_purchase: '买豆支出'
   }
   return typeMap[type] || type || '-'
@@ -1440,7 +1509,8 @@ function getTransactionTypeClass(type) {
   const classMap = {
     recharge: 'bg-green-100 text-green-800',
     consumption: 'bg-orange-100 text-orange-800',
-    bead_purchase: 'bg-rose-100 text-rose-800'
+    expense: 'bg-rose-100 text-rose-800',
+    bead_purchase: 'bg-fuchsia-100 text-fuchsia-800'
   }
   return classMap[type] || 'bg-gray-100 text-gray-800'
 }
@@ -1457,15 +1527,17 @@ function getTransactionAmountPrefix(type) {
   return isIncomeTransaction(type) ? '+' : '-'
 }
 
-function canCancelTransaction(type) {
-  return type === 'recharge' || type === 'consumption' || type === 'bead_purchase'
+function canCancelTransaction(transaction = {}) {
+  const normalized = normalizeTransaction(transaction)
+  if (normalized.status === 'cancelled') return false
+  return normalized.type === 'recharge' || normalized.type === 'consumption' || normalized.type === 'expense' || normalized.type === 'bead_purchase'
 }
 
 function getStatusLabel(status) {
   const statusMap = {
     completed: '已完成',
     pending: '待处理',
-    cancelled: '已取消'
+    cancelled: '已撤销'
   }
   return statusMap[status] || '已完成'
 }
@@ -1568,6 +1640,12 @@ function handleGlobalKeydown(event) {
     return
   }
 
+  if (showExpenseDialog.value) {
+    event.preventDefault()
+    closeExpenseDialog()
+    return
+  }
+
   if (showRechargeDialog.value) {
     event.preventDefault()
     closeRechargeDialog()
@@ -1583,6 +1661,8 @@ async function handleRouteAction() {
     await openRechargeDialog(customerId)
   } else if (action === 'consume' || action === 'consumption') {
     await openConsumeDialog(customerId)
+  } else if (action === 'expense') {
+    await openExpenseDialog()
   }
 
   clearRouteActionQuery()
@@ -1623,6 +1703,26 @@ watch(
     if (!showTimerEditDialog.value) return
     syncTimerEditLimitedOvertimeFromElapsed()
   }
+)
+
+watch(
+  () => billingRules.value,
+  () => {
+    if (!weekdayTypeOptions.value.some((item) => item.value === autoConsumeForm.weekdayType)) {
+      autoConsumeForm.weekdayType = getDefaultTimerPackagePlan('weekday', billingRules.value)
+    }
+    if (!weekendTypeOptions.value.some((item) => item.value === autoConsumeForm.weekendType)) {
+      autoConsumeForm.weekendType = getDefaultTimerPackagePlan('weekend', billingRules.value)
+    }
+
+    if (!weekdayTypeOptions.value.some((item) => item.value === timerEditForm.weekdayType)) {
+      timerEditForm.weekdayType = getDefaultTimerPackagePlan('weekday', billingRules.value)
+    }
+    if (!weekendTypeOptions.value.some((item) => item.value === timerEditForm.weekendType)) {
+      timerEditForm.weekendType = getDefaultTimerPackagePlan('weekend', billingRules.value)
+    }
+  },
+  { deep: true }
 )
 
 watch(
@@ -1671,6 +1771,15 @@ onUnmounted(() => {
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4" />
             </svg>
             <span>消费</span>
+          </button>
+          <button
+            @click="openExpenseDialog"
+            class="page-hero__action"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18V6m0 12h6M12 18H6" />
+            </svg>
+            <span>支出</span>
           </button>
         </div>
       </div>
@@ -1864,7 +1973,7 @@ onUnmounted(() => {
                     {{ isEditingTransaction(transaction.id) ? '结算中...' : '重新结算' }}
                   </button>
                   <button
-                    v-if="canCancelTransaction(transaction.type)"
+                    v-if="canCancelTransaction(transaction)"
                     @click="cancelTransaction(transaction)"
                     :disabled="isCancellingTransaction(transaction.id)"
                     class="text-rose-600 hover:text-rose-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -1951,7 +2060,7 @@ onUnmounted(() => {
                 {{ isEditingTransaction(transaction.id) ? '结算中...' : '重新结算' }}
               </button>
               <button
-                v-if="canCancelTransaction(transaction.type)"
+                v-if="canCancelTransaction(transaction)"
                 @click="cancelTransaction(transaction)"
                 :disabled="isCancellingTransaction(transaction.id)"
                 class="flex-1 min-w-[90px] px-3 py-2 text-sm rounded-lg border border-rose-200 text-rose-700 bg-rose-50 hover:bg-rose-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -2137,6 +2246,86 @@ onUnmounted(() => {
       </div>
     </Teleport>
 
+    <Teleport to="body">
+      <div
+        v-if="showExpenseDialog"
+        class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+        @mousedown="onBackdropMouseDown('transactions-expense', $event)"
+        @mouseup="onBackdropMouseUp('transactions-expense', $event) && closeExpenseDialog()"
+      >
+        <div class="bg-white rounded-xl shadow-xl w-full max-w-md mx-4">
+          <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+            <h3 class="text-lg font-semibold text-gray-800">新增支出</h3>
+            <button
+              @click="closeExpenseDialog()"
+              class="text-gray-400 hover:text-gray-600 transition-colors"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <div class="p-6 space-y-4">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">支出金额</label>
+              <div class="relative">
+                <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">￥</span>
+                <input
+                  ref="expenseAmountInputRef"
+                  v-model="expenseForm.amount"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="0.00"
+                  :class="[
+                    'w-full pl-8 pr-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-transparent',
+                    expenseErrors.amount ? 'border-red-500' : 'border-gray-300'
+                  ]"
+                />
+              </div>
+              <p v-if="expenseErrors.amount" class="text-red-500 text-xs mt-1">
+                {{ expenseErrors.amount }}
+              </p>
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">备注</label>
+              <textarea
+                v-model="expenseForm.description"
+                rows="3"
+                placeholder="请输入支出备注"
+                :class="[
+                  'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-transparent resize-none',
+                  expenseErrors.description ? 'border-red-500' : 'border-gray-300'
+                ]"
+              ></textarea>
+              <p v-if="expenseErrors.description" class="text-red-500 text-xs mt-1">
+                {{ expenseErrors.description }}
+              </p>
+            </div>
+
+            <div class="rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+              该记录为系统经营支出，仅记录现金流，不影响会员余额。
+            </div>
+          </div>
+          <div class="px-6 py-4 border-t border-gray-200 flex justify-end space-x-3">
+            <button
+              @click="closeExpenseDialog()"
+              class="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              取消
+            </button>
+            <button
+              @click="submitExpense"
+              :disabled="loading"
+              class="px-4 py-2 bg-rose-600 text-white rounded-lg hover:bg-rose-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              确认支出
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
     <Teleport to="body">
       <div
         v-if="showConsumeDialog"
@@ -2342,9 +2531,9 @@ onUnmounted(() => {
                     v-model="autoConsumeForm.weekdayType"
                     class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   >
-                    <option value="singleUnlimited">单人不限时不限板</option>
-                    <option value="doubleUnlimited">双人不限时不限板</option>
-                    <option value="singleLimited">单人不限时限板</option>
+                    <option v-for="item in weekdayTypeOptions" :key="item.value" :value="item.value">
+                      {{ item.label }}
+                    </option>
                   </select>
                 </div>
 
@@ -2354,9 +2543,9 @@ onUnmounted(() => {
                     v-model="autoConsumeForm.weekendType"
                     class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   >
-                    <option value="singleUnlimited">单人不限时不限板</option>
-                    <option value="doubleUnlimited">双人不限时不限板</option>
-                    <option value="singleLimited">单人不限时限板</option>
+                    <option v-for="item in weekendTypeOptions" :key="item.value" :value="item.value">
+                      {{ item.label }}
+                    </option>
                   </select>
                 </div>
 
@@ -2487,6 +2676,7 @@ onUnmounted(() => {
                 :errors="timerConsumeErrors"
                 :customer-options="validCustomers"
                 :enabled-misc-items="enabledMiscItems"
+                :billing-rules="billingRules"
                 @update:model-value="applyTimerConsumeForm"
               />
               <div v-if="enabledMiscItems.length > 0" class="mt-3 bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800">
@@ -2578,9 +2768,9 @@ onUnmounted(() => {
                   v-model="timerEditForm.weekdayType"
                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 >
-                  <option value="singleUnlimited">单人不限时不限板</option>
-                  <option value="doubleUnlimited">双人不限时不限板</option>
-                  <option value="singleLimited">单人不限时限板</option>
+                  <option v-for="item in weekdayTypeOptions" :key="item.value" :value="item.value">
+                    {{ item.label }}
+                  </option>
                 </select>
               </div>
 
@@ -2590,9 +2780,9 @@ onUnmounted(() => {
                   v-model="timerEditForm.weekendType"
                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 >
-                  <option value="singleUnlimited">单人不限时不限板</option>
-                  <option value="doubleUnlimited">双人不限时不限板</option>
-                  <option value="singleLimited">单人不限时限板</option>
+                  <option v-for="item in weekendTypeOptions" :key="item.value" :value="item.value">
+                    {{ item.label }}
+                  </option>
                 </select>
               </div>
 
@@ -2989,11 +3179,4 @@ onUnmounted(() => {
   opacity: 0.82;
 }
 </style>
-
-
-
-
-
-
-
 

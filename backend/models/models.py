@@ -112,9 +112,14 @@ class Transaction(db.Model):
     description = db.Column(db.String(255))
     activity_id = db.Column(db.String(10))
     operator = db.Column(db.String(50))
+    status = db.Column(db.String(20), nullable=False, default='completed', index=True)
+    cancelled_at = db.Column(db.DateTime)
+    cancel_reason = db.Column(db.String(255))
+    cancelled_by = db.Column(db.String(50))
     transaction_time = db.Column(db.DateTime, default=datetime.utcnow)
 
     def to_dict(self):
+        status = str(self.status or '').strip().lower() or 'completed'
         return {
             'id': self.id,
             'customer_id': self.customer_id,
@@ -125,6 +130,10 @@ class Transaction(db.Model):
             'description': _strip_misc_marker(self.description),
             'activity_id': self.activity_id,
             'operator': self.operator,
+            'status': status,
+            'cancelled_at': self.cancelled_at.isoformat() if self.cancelled_at else None,
+            'cancel_reason': self.cancel_reason,
+            'cancelled_by': self.cancelled_by,
             'transaction_time': self.transaction_time.isoformat() if self.transaction_time else None
         }
 
@@ -326,6 +335,7 @@ class Log(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     type = db.Column(db.String(50))
     description = db.Column(db.String(255))
+    context = db.Column(db.JSON)
     operator = db.Column(db.String(50))
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 

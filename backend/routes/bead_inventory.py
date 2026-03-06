@@ -191,6 +191,28 @@ def _build_restock_suggestion(material):
     }
 
 
+def _capture_material_snapshot(material, balance_grams=None):
+    if balance_grams is None:
+        balance = BeadInventoryBalance.query.filter_by(material_id=material.id).first()
+        balance_grams = float(balance.current_grams if balance else 0.0)
+
+    return {
+        'id': material.id,
+        'name': material.name,
+        'color_code': material.color_code,
+        'spec': material.spec,
+        'brand': material.brand,
+        'unit': material.unit,
+        'grams_per_bag': material.grams_per_bag,
+        'grams_per_bottle': material.grams_per_bottle,
+        'market_price_per_500g': float(material.market_price_per_500g or 0.0),
+        'safe_stock': float(material.safe_stock or 0.0),
+        'common_color': bool(material.common_color),
+        'status': material.status,
+        'balance_current_grams': float(balance_grams or 0.0)
+    }
+
+
 def _generate_transaction_id():
     last_transaction = Transaction.query.order_by(Transaction.id.desc()).first()
     if last_transaction:
@@ -553,7 +575,16 @@ def create_material():
     db.session.add(BeadInventoryBalance(material_id=material.id, current_grams=0.0))
 
     operator = get_operator_name()
-    write_log('bead_material_create', f'创建豆料：{material.name}（{material.id}）', operator=operator)
+    write_log(
+        'bead_material_create',
+        f'创建豆料：{material.name}（{material.id}）',
+        operator=operator,
+        context={
+            'material_id': material.id,
+            'before': None,
+            'after': _capture_material_snapshot(material, balance_grams=0.0)
+        }
+    )
     db.session.commit()
     return success_response(_material_payload(material), '豆料创建成功', 201)
 
@@ -564,6 +595,12 @@ def update_material(material_id):
     material = BeadMaterial.query.filter_by(id=material_id).first()
     if not material:
         return error_response('豆料不存在', 404)
+
+    before_balance = BeadInventoryBalance.query.filter_by(material_id=material_id).first()
+    before_snapshot = _capture_material_snapshot(
+        material,
+        balance_grams=float(before_balance.current_grams if before_balance else 0.0)
+    )
 
     data = request.get_json() or {}
     name = data.get('name')
@@ -613,7 +650,20 @@ def update_material(material_id):
         material.market_price_per_500g = float(value)
 
     operator = get_operator_name()
-    write_log('bead_material_update', f'更新豆料：{material.name}（{material.id}）', operator=operator)
+    after_balance = BeadInventoryBalance.query.filter_by(material_id=material_id).first()
+    write_log(
+        'bead_material_update',
+        f'更新豆料：{material.name}（{material.id}）',
+        operator=operator,
+        context={
+            'material_id': material.id,
+            'before': before_snapshot,
+            'after': _capture_material_snapshot(
+                material,
+                balance_grams=float(after_balance.current_grams if after_balance else 0.0)
+            )
+        }
+    )
     db.session.commit()
     return success_response(_material_payload(material), '豆料更新成功')
 
@@ -631,11 +681,22 @@ def delete_material(material_id):
     if ledger_count > 0 or current_grams > 0:
         return error_response('该豆料已存在流水或库存，不允许删除', 400)
 
+    before_snapshot = _capture_material_snapshot(material, balance_grams=current_grams)
+
     if balance:
         db.session.delete(balance)
     db.session.delete(material)
     operator = get_operator_name()
-    write_log('bead_material_delete', f'删除豆料：{material.name}（{material.id}）', operator=operator)
+    write_log(
+        'bead_material_delete',
+        f'删除豆料：{material.name}（{material.id}）',
+        operator=operator,
+        context={
+            'material_id': material_id,
+            'before': before_snapshot,
+            'after': None
+        }
+    )
     db.session.commit()
     return success_response(message='豆料删除成功')
 
@@ -689,7 +750,8 @@ def create_inbound():
         return error_response(str(exc), 400)
 
     balance = get_or_create_balance(material_id)
-    balance.current_grams = float(balance.current_grams or 0.0) + grams
+    balance_before = float(balance.current_grams or 0.0)
+    balance.current_grams = balance_before + grams
     reference_no = generate_reference_no('IN')
     operator = get_operator_name()
 
@@ -708,7 +770,18 @@ def create_inbound():
     write_log(
         'bead_inventory_inbound',
         f'豆料入库：{material.name}（{material_id}） +{grams:.3f}g，单号 {reference_no}',
-        operator=operator
+        operator=operator,
+        context={
+            'material_id': material_id,
+            'reference_no': reference_no,
+            'action_type': 'inbound',
+            'delta_grams': grams,
+            'balance_before_grams': balance_before,
+            'balance_after_grams': float(balance.current_grams or 0.0),
+            'unit_input': normalized_unit,
+            'unit_count': float(quantity),
+            'reason': source or '补货入库'
+        }
     )
     db.session.commit()
 
@@ -749,6 +822,7 @@ def create_outbound():
     if current_grams + 1e-9 < grams:
         return error_response('库存不足，无法出库', 400)
 
+    balance_before = current_grams
     balance.current_grams = round(current_grams - grams, 3)
     reference_no = generate_reference_no('OUT')
     operator = get_operator_name()
@@ -770,7 +844,19 @@ def create_outbound():
     write_log(
         'bead_inventory_outbound' if outbound_type == 'outbound' else 'bead_inventory_loss',
         f'豆料出库：{material.name}（{material_id}） {delta:.3f}g，单号 {reference_no}',
-        operator=operator
+        operator=operator,
+        context={
+            'material_id': material_id,
+            'reference_no': reference_no,
+            'action_type': outbound_type,
+            'delta_grams': delta,
+            'balance_before_grams': balance_before,
+            'balance_after_grams': float(balance.current_grams or 0.0),
+            'unit_input': normalized_unit,
+            'unit_count': float(quantity),
+            'reason': usage_type or ('损耗出库' if outbound_type == 'loss' else '常规出库'),
+            'transaction_id': transaction.id
+        }
     )
     db.session.commit()
 
@@ -839,7 +925,18 @@ def create_stocktake():
             f'豆料盘点：{material.name}（{material_id}）'
             f' 实盘 {counted_grams:.3f}g，差异 {difference_grams:.3f}g，单号 {reference_no}'
         ),
-        operator=operator
+        operator=operator,
+        context={
+            'material_id': material_id,
+            'reference_no': reference_no,
+            'action_type': 'stocktake_adjust',
+            'delta_grams': difference_grams,
+            'previous_grams': previous_grams,
+            'counted_grams': counted_grams,
+            'balance_before_grams': previous_grams,
+            'balance_after_grams': counted_grams,
+            'stocktake_id': stocktake.id
+        }
     )
     db.session.commit()
 

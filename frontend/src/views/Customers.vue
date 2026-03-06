@@ -11,6 +11,12 @@ import {
   calculateMeituanDeduction,
   applyDeduction
 } from '@/utils/consumptionCalculator'
+import {
+  timerTypeOptions as sharedTimerTypeOptions,
+  getTimerPackagePlanOptions,
+  getDefaultTimerPackagePlan,
+  buildTimerConsumeNotesPayload
+} from '@/utils/timerConsume'
 
 const customersLoading = ref(false)
 const detailLoading = ref(false)
@@ -85,8 +91,8 @@ const autoConsumeForm = reactive({
   customerId: '',
   billingType: 'limited',
   duration: '1',
-  weekdayType: 'singleUnlimited',
-  weekendType: 'singleUnlimited',
+  weekdayType: getDefaultTimerPackagePlan('weekday'),
+  weekendType: getDefaultTimerPackagePlan('weekend'),
   overtimeMinutes: 0,
   largeImages: 0,
   extraSmallImages: 0,
@@ -100,7 +106,7 @@ const autoConsumeForm = reactive({
 const timerConsumeForm = reactive({
   customerId: '',
   timerType: 'limited',
-  packagePlan: 'limited1h',
+  packagePlan: getDefaultTimerPackagePlan('limited'),
   largeImages: 0,
   extraSmallImages: 0,
   extraLargeImages: 0,
@@ -129,35 +135,10 @@ const consumeModes = [
   { value: 'timer', label: '计时消费' }
 ]
 
-const timerTypeOptions = [
-  { value: 'limited', label: '限时套餐' },
-  { value: 'weekday', label: '工作日套餐' },
-  { value: 'weekend', label: '周末套餐' }
-]
-
-const timerPackagePlanOptionsByType = {
-  limited: [
-    { value: 'limited1h', label: '限时1小时' },
-    { value: 'limited2h', label: '限时2小时' }
-  ],
-  weekday: [
-    { value: 'weekdaySingleUnlimited', label: '工作日单人不限时不限板' },
-    { value: 'weekdayDoubleUnlimited', label: '工作日双人不限时不限板' },
-    { value: 'weekdaySingleLimited', label: '工作日单人不限时限板' }
-  ],
-  weekend: [
-    { value: 'weekendSingleUnlimited', label: '周末单人不限时不限板' },
-    { value: 'weekendDoubleUnlimited', label: '周末双人不限时不限板' },
-    { value: 'weekendSingleLimited', label: '周末单人不限时限板' }
-  ]
-}
-
-const timerPackagePlanOptions = computed(() => timerPackagePlanOptionsByType[timerConsumeForm.timerType] || [])
-
-function getDefaultTimerPackagePlan(timerType = 'limited') {
-  const options = timerPackagePlanOptionsByType[timerType] || timerPackagePlanOptionsByType.limited
-  return options[0]?.value || 'limited1h'
-}
+const timerTypeOptions = sharedTimerTypeOptions
+const timerPackagePlanOptions = computed(() => getTimerPackagePlanOptions(timerConsumeForm.timerType, billingRules.value))
+const weekdayTypeOptions = computed(() => getTimerPackagePlanOptions('weekday', billingRules.value))
+const weekendTypeOptions = computed(() => getTimerPackagePlanOptions('weekend', billingRules.value))
 const pageSizeOptions = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
@@ -843,8 +824,8 @@ function resetConsumeForms(customerId = '') {
   autoConsumeForm.customerId = customerId
   autoConsumeForm.billingType = 'limited'
   autoConsumeForm.duration = '1'
-  autoConsumeForm.weekdayType = 'singleUnlimited'
-  autoConsumeForm.weekendType = 'singleUnlimited'
+  autoConsumeForm.weekdayType = getDefaultTimerPackagePlan('weekday', billingRules.value)
+  autoConsumeForm.weekendType = getDefaultTimerPackagePlan('weekend', billingRules.value)
   autoConsumeForm.overtimeMinutes = 0
   autoConsumeForm.largeImages = 0
   autoConsumeForm.extraSmallImages = 0
@@ -856,7 +837,7 @@ function resetConsumeForms(customerId = '') {
 
   timerConsumeForm.customerId = customerId
   timerConsumeForm.timerType = 'limited'
-  timerConsumeForm.packagePlan = getDefaultTimerPackagePlan('limited')
+  timerConsumeForm.packagePlan = getDefaultTimerPackagePlan('limited', billingRules.value)
   timerConsumeForm.largeImages = 0
   timerConsumeForm.extraSmallImages = 0
   timerConsumeForm.extraLargeImages = 0
@@ -956,6 +937,12 @@ function validateTimerConsumeForm() {
   }
   if (!timerConsumeForm.packagePlan) {
     errors.packagePlan = '请选择套餐方案'
+  } else {
+    const options = getTimerPackagePlanOptions(timerConsumeForm.timerType || 'limited', billingRules.value)
+    const exists = options.some((item) => String(item?.value || '').trim() === String(timerConsumeForm.packagePlan || '').trim())
+    if (!exists) {
+      errors.packagePlan = '套餐方案已失效，请重新选择'
+    }
   }
 
   const miscErrors = collectTimerMiscErrors(timerConsumeForm.miscSelections)
@@ -1062,16 +1049,13 @@ async function submitTimerConsume() {
   if (!validateTimerConsumeForm()) return
 
   const normalizedMiscSelections = createMiscSelectionMap(timerConsumeForm.miscSelections)
-  const notesPayload = JSON.stringify({
-    note: timerConsumeForm.notes || '',
-    packagePlan: timerConsumeForm.packagePlan || getDefaultTimerPackagePlan(timerConsumeForm.timerType),
-    materials: {
-      largeImages: Number(timerConsumeForm.largeImages) || 0,
-      extraSmallImages: Number(timerConsumeForm.extraSmallImages) || 0,
-      extraLargeImages: Number(timerConsumeForm.extraLargeImages) || 0
+  const notesPayload = buildTimerConsumeNotesPayload(
+    {
+      ...timerConsumeForm,
+      miscSelections: normalizedMiscSelections
     },
-    miscSelections: normalizedMiscSelections
-  })
+    billingRules.value
+  )
 
   await api.post('/active-timers', {
     customer_id: timerConsumeForm.customerId,
@@ -1136,8 +1120,32 @@ watch(
 watch(
   () => timerConsumeForm.timerType,
   (nextType) => {
-    timerConsumeForm.packagePlan = getDefaultTimerPackagePlan(nextType)
+    const options = getTimerPackagePlanOptions(nextType, billingRules.value)
+    const currentPlan = timerConsumeForm.packagePlan
+    if (!options.some((item) => item.value === currentPlan)) {
+      timerConsumeForm.packagePlan = getDefaultTimerPackagePlan(nextType, billingRules.value)
+    }
   }
+)
+
+watch(
+  () => billingRules.value,
+  () => {
+    const weekdayOptions = weekdayTypeOptions.value
+    const weekendOptions = weekendTypeOptions.value
+    if (!weekdayOptions.some((item) => item.value === autoConsumeForm.weekdayType)) {
+      autoConsumeForm.weekdayType = getDefaultTimerPackagePlan('weekday', billingRules.value)
+    }
+    if (!weekendOptions.some((item) => item.value === autoConsumeForm.weekendType)) {
+      autoConsumeForm.weekendType = getDefaultTimerPackagePlan('weekend', billingRules.value)
+    }
+
+    const timerOptions = timerPackagePlanOptions.value
+    if (!timerOptions.some((item) => item.value === timerConsumeForm.packagePlan)) {
+      timerConsumeForm.packagePlan = getDefaultTimerPackagePlan(timerConsumeForm.timerType, billingRules.value)
+    }
+  },
+  { deep: true }
 )
 
 onMounted(async () => {
@@ -1930,18 +1938,18 @@ onUnmounted(() => {
                 <div v-if="autoConsumeForm.billingType === 'weekday'">
                   <label class="block text-sm font-medium text-gray-700 mb-1">工作日方案</label>
                   <select v-model="autoConsumeForm.weekdayType" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-                    <option value="singleUnlimited">单人不限时不限板</option>
-                    <option value="doubleUnlimited">双人不限时不限板</option>
-                    <option value="singleLimited">单人不限时限板</option>
+                    <option v-for="item in weekdayTypeOptions" :key="item.value" :value="item.value">
+                      {{ item.label }}
+                    </option>
                   </select>
                 </div>
 
                 <div v-if="autoConsumeForm.billingType === 'weekend'">
                   <label class="block text-sm font-medium text-gray-700 mb-1">周末方案</label>
                   <select v-model="autoConsumeForm.weekendType" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-                    <option value="singleUnlimited">单人不限时不限板</option>
-                    <option value="doubleUnlimited">双人不限时不限板</option>
-                    <option value="singleLimited">单人不限时限板</option>
+                    <option v-for="item in weekendTypeOptions" :key="item.value" :value="item.value">
+                      {{ item.label }}
+                    </option>
                   </select>
                 </div>
 

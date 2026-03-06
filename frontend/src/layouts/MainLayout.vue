@@ -60,13 +60,6 @@ const currentUserLabel = computed(() => {
   return username ? `${username}（${roleLabel}）` : roleLabel
 })
 
-function isDoublePackagePlan(packagePlan = '') {
-  return [
-    'weekdayDoubleUnlimited',
-    'weekendDoubleUnlimited'
-  ].includes(String(packagePlan || ''))
-}
-
 function normalizeTableNo(rawValue) {
   const raw = String(rawValue || '').trim()
   const matched = TABLE_NO_PATTERN.exec(raw)
@@ -79,6 +72,39 @@ function toSeatCode(rawTableNo) {
   const matched = TABLE_NO_PATTERN.exec(normalized)
   if (!matched) return ''
   return `${matched[1].toLowerCase()}${matched[2]}`
+}
+
+function getTimerExtraTableNos(timer) {
+  const list = []
+  const seen = new Set()
+  const pushSeat = (rawSeatNo) => {
+    const normalized = normalizeTableNo(rawSeatNo)
+    if (!TABLE_NO_PATTERN.test(normalized)) return
+    if (seen.has(normalized)) return
+    seen.add(normalized)
+    list.push(normalized)
+  }
+
+  if (Array.isArray(timer?.extraTableNos)) {
+    timer.extraTableNos.forEach((item) => pushSeat(item))
+  }
+  pushSeat(timer?.secondTableNo)
+  return list
+}
+
+function getTimerOccupiedTableNos(timer) {
+  const seats = []
+  const first = normalizeTableNo(timer?.tableNo)
+  if (TABLE_NO_PATTERN.test(first)) {
+    seats.push(first)
+  }
+  const seen = new Set(seats)
+  getTimerExtraTableNos(timer).forEach((seatNo) => {
+    if (seen.has(seatNo)) return
+    seen.add(seatNo)
+    seats.push(seatNo)
+  })
+  return seats
 }
 
 function loadWarnedTimerIds() {
@@ -192,37 +218,52 @@ function persistWarnedTimerIds() {
 }
 
 function parseTimerNotes(rawNotes) {
-  if (!rawNotes) {
-    return {
-      packagePlan: '',
-      secondTableNo: '',
-      timing: {
-        elapsedSeconds: 0,
-        resumedAt: ''
-      }
+  const createDefault = () => ({
+    packagePlan: '',
+    extraTableNos: [],
+    secondTableNo: '',
+    timing: {
+      elapsedSeconds: 0,
+      resumedAt: ''
     }
+  })
+  const normalizeExtraSeatList = (rawExtraTableNos, legacySecondTableNo = '') => {
+    const source = Array.isArray(rawExtraTableNos) ? rawExtraTableNos : []
+    const list = []
+    const seen = new Set()
+    const pushSeat = (rawSeatNo) => {
+      const seatNo = normalizeTableNo(rawSeatNo)
+      if (!TABLE_NO_PATTERN.test(seatNo)) return
+      if (seen.has(seatNo)) return
+      seen.add(seatNo)
+      list.push(seatNo)
+    }
+    source.forEach((item) => pushSeat(item))
+    if (list.length === 0 && legacySecondTableNo) {
+      pushSeat(legacySecondTableNo)
+    }
+    return list
+  }
+
+  if (!rawNotes) {
+    return createDefault()
   }
 
   try {
     const parsed = JSON.parse(rawNotes)
     if (!parsed || typeof parsed !== 'object') throw new Error('invalid notes')
+    const extraTableNos = normalizeExtraSeatList(parsed.extraTableNos, parsed.secondTableNo)
     return {
       packagePlan: String(parsed.packagePlan || '').trim(),
-      secondTableNo: normalizeTableNo(parsed.secondTableNo),
+      extraTableNos,
+      secondTableNo: extraTableNos[0] || '',
       timing: {
         elapsedSeconds: Math.max(0, Math.floor(Number(parsed.timing?.elapsedSeconds) || 0)),
         resumedAt: String(parsed.timing?.resumedAt || '')
       }
     }
   } catch {
-    return {
-      packagePlan: '',
-      secondTableNo: '',
-      timing: {
-        elapsedSeconds: 0,
-        resumedAt: ''
-      }
-    }
+    return createDefault()
   }
 }
 
@@ -442,13 +483,9 @@ function buildWarningFromTimer(timer, timestamp = Date.now()) {
   const elapsedMinutes = getElapsedMinutes(timer, timestamp)
   if (elapsedMinutes < triggerMinutes) return null
 
-  const occupiedSeats = [toSeatCode(timer.tableNo)]
-  if (isDoublePackagePlan(timer.packagePlan)) {
-    const second = toSeatCode(timer.secondTableNo)
-    if (second) occupiedSeats.push(second)
-  }
-
-  const filteredSeats = occupiedSeats.filter(Boolean)
+  const filteredSeats = getTimerOccupiedTableNos(timer)
+    .map((seatNo) => toSeatCode(seatNo))
+    .filter(Boolean)
   const speechDesk = filteredSeats.length > 0 ? filteredSeats.join('、') : (timer.customerName || `客户${timer.customerId || ''}`)
   const tableNoDisplay = filteredSeats.length > 0 ? filteredSeats.join('、').toUpperCase() : normalizeTableNo(timer.tableNo)
   const remainingMinutes = Math.max(0, totalMinutes - elapsedMinutes)
@@ -495,6 +532,7 @@ function normalizeTimer(timer = {}) {
     customerId: String(timer.customer_id || timer.customerId || '').trim(),
     customerName: String(timer.customer?.name || '').trim(),
     tableNo: normalizeTableNo(timer.table_no || timer.tableNo || ''),
+    extraTableNos: Array.isArray(notes.extraTableNos) ? notes.extraTableNos : [],
     secondTableNo: normalizeTableNo(notes.secondTableNo),
     packagePlan: inferPackagePlan(timerType, notes.packagePlan),
     startTime: timer.start_time || timer.startTime || null,

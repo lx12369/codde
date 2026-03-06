@@ -7,7 +7,8 @@ import {
   TABLE_AREA_OPTIONS,
   TABLE_SEAT_OPTIONS,
   buildTableNo,
-  isDoublePackagePlan
+  getRequiredExtraSeatCount,
+  getTimerConsumeSeatPayload
 } from '@/utils/timerConsume'
 
 const props = defineProps({
@@ -26,16 +27,22 @@ const props = defineProps({
   enabledMiscItems: {
     type: Array,
     default: () => []
+  },
+  billingRules: {
+    type: Object,
+    default: () => ({})
   }
 })
 
 const emit = defineEmits(['update:modelValue'])
 const customerSelectRef = ref(null)
 
-const packagePlanOptions = computed(() => getTimerPackagePlanOptions(props.modelValue?.timerType))
+const packagePlanOptions = computed(() => getTimerPackagePlanOptions(props.modelValue?.timerType, props.billingRules))
 const tableAreaOptions = TABLE_AREA_OPTIONS
 const tableSeatOptions = TABLE_SEAT_OPTIONS
-const showSecondSeat = computed(() => isDoublePackagePlan(props.modelValue?.packagePlan))
+const requiredExtraSeatCount = computed(() => getRequiredExtraSeatCount(props.modelValue?.packagePlan, props.billingRules))
+const showExtraSeats = computed(() => requiredExtraSeatCount.value > 0)
+const extraSeatSelections = computed(() => getTimerConsumeSeatPayload(props.modelValue, props.billingRules).extraTableSelections)
 const hasMiscItems = computed(() => props.enabledMiscItems.length > 0)
 
 function patchForm(patch = {}) {
@@ -53,6 +60,69 @@ function patchTableNo(nextArea, nextSeat) {
     tableSeat,
     tableNo: buildTableNo(tableArea, tableSeat)
   })
+}
+
+function getFirstExtraSeatLegacyPatch(nextSelections = null) {
+  const seatPayload = getTimerConsumeSeatPayload(
+    {
+      ...props.modelValue,
+      extraTableSelections: nextSelections ?? props.modelValue?.extraTableSelections
+    },
+    props.billingRules
+  )
+  const first = seatPayload.extraTableSelections[0] || {}
+  return {
+    extraTableSelections: seatPayload.extraTableSelections,
+    extraTableNos: seatPayload.extraTableNos,
+    secondTableArea: first.tableArea || props.modelValue?.tableArea || TABLE_AREA_OPTIONS[0],
+    secondTableSeat: first.tableSeat || '',
+    secondTableNo: seatPayload.secondTableNo
+  }
+}
+
+function areExtraSeatSelectionsEqual(left = [], right = []) {
+  if (!Array.isArray(left) || !Array.isArray(right)) return false
+  if (left.length !== right.length) return false
+  return left.every((item, index) => {
+    const target = right[index] || {}
+    return String(item?.tableArea || '') === String(target.tableArea || '')
+      && String(item?.tableSeat || '') === String(target.tableSeat || '')
+      && String(item?.tableNo || '') === String(target.tableNo || '')
+  })
+}
+
+function patchExtraSelections(nextSelections) {
+  patchForm(getFirstExtraSeatLegacyPatch(nextSelections))
+}
+
+function updateExtraSeatArea(index, value) {
+  const list = extraSeatSelections.value.map((item) => ({ ...item }))
+  if (!list[index]) return
+  const area = String(value || '').trim().toUpperCase()
+  list[index] = {
+    ...list[index],
+    tableArea: area,
+    tableNo: buildTableNo(area, list[index].tableSeat)
+  }
+  patchExtraSelections(list)
+}
+
+function updateExtraSeatSeat(index, value) {
+  const list = extraSeatSelections.value.map((item) => ({ ...item }))
+  if (!list[index]) return
+  const seat = String(value || '').trim()
+  list[index] = {
+    ...list[index],
+    tableSeat: seat,
+    tableNo: buildTableNo(list[index].tableArea, seat)
+  }
+  patchExtraSelections(list)
+}
+
+function getExtraSeatError(index) {
+  return props.errors?.[`extraTableNos.${index}`]
+    || (index === 0 ? props.errors?.secondTableNo : '')
+    || ''
 }
 
 function updateNumberField(field, value) {
@@ -107,18 +177,18 @@ watch(
     if (!nextType) {
       patchForm({
         timerType: 'limited',
-        packagePlan: getDefaultTimerPackagePlan('limited')
+        packagePlan: getDefaultTimerPackagePlan('limited', props.billingRules)
       })
       return
     }
 
-    const options = getTimerPackagePlanOptions(nextType)
+    const options = getTimerPackagePlanOptions(nextType, props.billingRules)
     const currentPlan = props.modelValue?.packagePlan
     const isCurrentPlanValid = options.some((item) => item.value === currentPlan)
 
     if (!isCurrentPlanValid) {
       patchForm({
-        packagePlan: getDefaultTimerPackagePlan(nextType)
+        packagePlan: getDefaultTimerPackagePlan(nextType, props.billingRules)
       })
     }
   },
@@ -127,12 +197,57 @@ watch(
 
 watch(
   () => props.modelValue?.packagePlan,
-  (nextPlan) => {
-    if (isDoublePackagePlan(nextPlan)) return
-    patchForm({
-      secondTableSeat: '',
-      secondTableNo: ''
-    })
+  () => {
+    const expected = getFirstExtraSeatLegacyPatch()
+    const currentSelections = Array.isArray(props.modelValue?.extraTableSelections)
+      ? props.modelValue.extraTableSelections
+      : []
+    const currentTableNos = Array.isArray(props.modelValue?.extraTableNos)
+      ? props.modelValue.extraTableNos
+      : []
+    const hasSelectionDiff = !areExtraSeatSelectionsEqual(currentSelections, expected.extraTableSelections)
+    const hasTableNoDiff = JSON.stringify(currentTableNos) !== JSON.stringify(expected.extraTableNos)
+    const hasLegacyDiff = String(props.modelValue?.secondTableNo || '') !== expected.secondTableNo
+      || String(props.modelValue?.secondTableArea || '') !== expected.secondTableArea
+      || String(props.modelValue?.secondTableSeat || '') !== expected.secondTableSeat
+    if (hasSelectionDiff || hasTableNoDiff || hasLegacyDiff) {
+      patchForm(expected)
+    }
+  }
+)
+
+watch(
+  () => props.billingRules,
+  () => {
+    const timerType = props.modelValue?.timerType || 'limited'
+    const options = getTimerPackagePlanOptions(timerType, props.billingRules)
+    const currentPlan = props.modelValue?.packagePlan
+    if (!options.some((item) => item.value === currentPlan)) {
+      patchForm({
+        packagePlan: getDefaultTimerPackagePlan(timerType, props.billingRules)
+      })
+    }
+    const expected = getFirstExtraSeatLegacyPatch()
+    const currentSelections = Array.isArray(props.modelValue?.extraTableSelections)
+      ? props.modelValue.extraTableSelections
+      : []
+    if (!areExtraSeatSelectionsEqual(currentSelections, expected.extraTableSelections)) {
+      patchForm(expected)
+    }
+  },
+  { deep: true }
+)
+
+watch(
+  () => props.modelValue?.tableArea,
+  () => {
+    const expected = getFirstExtraSeatLegacyPatch()
+    const currentSelections = Array.isArray(props.modelValue?.extraTableSelections)
+      ? props.modelValue.extraTableSelections
+      : []
+    if (!areExtraSeatSelectionsEqual(currentSelections, expected.extraTableSelections)) {
+      patchForm(expected)
+    }
   }
 )
 
@@ -188,7 +303,26 @@ defineExpose({
     </div>
 
     <div>
-      <label class="block text-sm font-medium text-gray-700 mb-1">桌号</label>
+      <label class="block text-sm font-medium text-gray-700 mb-1">套餐方案</label>
+      <select
+        :value="modelValue.packagePlan"
+        :class="[
+          'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
+          errors.packagePlan ? 'border-red-500' : 'border-gray-300'
+        ]"
+        @change="patchForm({ packagePlan: $event.target.value })"
+      >
+        <option v-for="item in packagePlanOptions" :key="item.value" :value="item.value">
+          {{ item.label }}
+        </option>
+      </select>
+      <p v-if="errors.packagePlan" class="text-red-500 text-xs mt-1">
+        {{ errors.packagePlan }}
+      </p>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">第1座位</label>
       <div class="grid grid-cols-2 gap-3">
         <select
           :value="modelValue.tableArea"
@@ -220,63 +354,45 @@ defineExpose({
       </p>
     </div>
 
-    <div>
-      <label class="block text-sm font-medium text-gray-700 mb-1">套餐方案</label>
-      <select
-        :value="modelValue.packagePlan"
-        :class="[
-          'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-          errors.packagePlan ? 'border-red-500' : 'border-gray-300'
-        ]"
-        @change="patchForm({ packagePlan: $event.target.value })"
-      >
-        <option v-for="item in packagePlanOptions" :key="item.value" :value="item.value">
-          {{ item.label }}
-        </option>
-      </select>
-      <p v-if="errors.packagePlan" class="text-red-500 text-xs mt-1">
-        {{ errors.packagePlan }}
-      </p>
-    </div>
-
-    <div v-if="showSecondSeat">
-      <label class="block text-sm font-medium text-gray-700 mb-1">第二座位（双人套餐）</label>
-      <div class="grid grid-cols-2 gap-3">
-        <select
-          :value="modelValue.secondTableArea || modelValue.tableArea"
-          :class="[
-            'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-            errors.secondTableNo ? 'border-red-500' : 'border-gray-300'
-          ]"
-          @change="patchForm({
-            secondTableArea: String($event.target.value || '').trim().toUpperCase(),
-            secondTableNo: buildTableNo(String($event.target.value || '').trim().toUpperCase(), modelValue.secondTableSeat)
-          })"
-        >
-          <option v-for="area in tableAreaOptions" :key="`second-${area}`" :value="area">
-            {{ area }}桌
-          </option>
-        </select>
-        <select
-          :value="modelValue.secondTableSeat"
-          :class="[
-            'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-            errors.secondTableNo ? 'border-red-500' : 'border-gray-300'
-          ]"
-          @change="patchForm({
-            secondTableArea: modelValue.secondTableArea || modelValue.tableArea,
-            secondTableSeat: $event.target.value,
-            secondTableNo: buildTableNo(modelValue.secondTableArea || modelValue.tableArea, $event.target.value)
-          })"
-        >
-          <option value="">请选择号位</option>
-          <option v-for="seat in tableSeatOptions" :key="`second-seat-${seat}`" :value="seat">
-            {{ seat }}号
-          </option>
-        </select>
+    <div v-if="showExtraSeats" class="space-y-3">
+      <div class="text-xs text-slate-600">
+        当前套餐需选择 {{ requiredExtraSeatCount }} 个附加座位（总座位 {{ requiredExtraSeatCount + 1 }} 个）
       </div>
-      <p v-if="errors.secondTableNo" class="text-red-500 text-xs mt-1">
-        {{ errors.secondTableNo }}
+      <div v-for="(seat, index) in extraSeatSelections" :key="`extra-seat-${index}`">
+        <label class="block text-sm font-medium text-gray-700 mb-1">第{{ index + 2 }}座位</label>
+        <div class="grid grid-cols-2 gap-3">
+          <select
+            :value="seat.tableArea || modelValue.tableArea"
+            :class="[
+              'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
+              getExtraSeatError(index) ? 'border-red-500' : 'border-gray-300'
+            ]"
+            @change="updateExtraSeatArea(index, $event.target.value)"
+          >
+            <option v-for="area in tableAreaOptions" :key="`extra-area-${index}-${area}`" :value="area">
+              {{ area }}桌
+            </option>
+          </select>
+          <select
+            :value="seat.tableSeat"
+            :class="[
+              'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
+              getExtraSeatError(index) ? 'border-red-500' : 'border-gray-300'
+            ]"
+            @change="updateExtraSeatSeat(index, $event.target.value)"
+          >
+            <option value="">请选择号位</option>
+            <option v-for="seatNo in tableSeatOptions" :key="`extra-seat-${index}-${seatNo}`" :value="seatNo">
+              {{ seatNo }}号
+            </option>
+          </select>
+        </div>
+        <p v-if="getExtraSeatError(index)" class="text-red-500 text-xs mt-1">
+          {{ getExtraSeatError(index) }}
+        </p>
+      </div>
+      <p v-if="errors.extraTableNos" class="text-red-500 text-xs mt-1">
+        {{ errors.extraTableNos }}
       </p>
     </div>
 

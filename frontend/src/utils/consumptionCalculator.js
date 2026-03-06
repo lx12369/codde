@@ -1,5 +1,70 @@
 ﻿import { getEffectiveBillingDayType } from '@/utils/dayType'
 
+const DEFAULT_UNLIMITED_PACKAGES = {
+  weekday: [
+    {
+      id: 'weekday_unlimited_1p',
+      code: 'weekdaySingleUnlimited',
+      label: '工作日单人不限时不限板',
+      people_count: 1,
+      price: 53.9,
+      enabled: true,
+      sort_order: 1
+    },
+    {
+      id: 'weekday_unlimited_2p',
+      code: 'weekdayDoubleUnlimited',
+      label: '工作日双人不限时不限板',
+      people_count: 2,
+      price: 103.9,
+      enabled: true,
+      sort_order: 2
+    }
+  ],
+  weekend: [
+    {
+      id: 'weekend_unlimited_1p',
+      code: 'weekendSingleUnlimited',
+      label: '周末单人不限时不限板',
+      people_count: 1,
+      price: 63.9,
+      enabled: true,
+      sort_order: 1
+    },
+    {
+      id: 'weekend_unlimited_2p',
+      code: 'weekendDoubleUnlimited',
+      label: '周末双人不限时不限板',
+      people_count: 2,
+      price: 123.9,
+      enabled: true,
+      sort_order: 2
+    }
+  ]
+}
+
+const LEGACY_DAY_TYPE_TO_PLAN_CODE = {
+  weekday: {
+    singleUnlimited: 'weekdaySingleUnlimited',
+    doubleUnlimited: 'weekdayDoubleUnlimited',
+    singleLimited: 'weekdaySingleLimited'
+  },
+  weekend: {
+    singleUnlimited: 'weekendSingleUnlimited',
+    doubleUnlimited: 'weekendDoubleUnlimited',
+    singleLimited: 'weekendSingleLimited'
+  }
+}
+
+const LEGACY_PLAN_CODE_META = {
+  weekdaySingleUnlimited: { timerType: 'weekday', peopleCount: 1, label: '工作日单人不限时不限板', limited: false },
+  weekdayDoubleUnlimited: { timerType: 'weekday', peopleCount: 2, label: '工作日双人不限时不限板', limited: false },
+  weekdaySingleLimited: { timerType: 'weekday', peopleCount: 1, label: '工作日单人不限时限板', limited: true },
+  weekendSingleUnlimited: { timerType: 'weekend', peopleCount: 1, label: '周末单人不限时不限板', limited: false },
+  weekendDoubleUnlimited: { timerType: 'weekend', peopleCount: 2, label: '周末双人不限时不限板', limited: false },
+  weekendSingleLimited: { timerType: 'weekend', peopleCount: 1, label: '周末单人不限时限板', limited: true }
+}
+
 const DEFAULT_BILLING_RULES = {
   limited: {
     price1h: 18.9,
@@ -9,13 +74,11 @@ const DEFAULT_BILLING_RULES = {
     overtime30Fee: 18.9
   },
   weekday: {
-    singleUnlimited: 53.9,
-    doubleUnlimited: 103.9,
+    unlimited_packages: DEFAULT_UNLIMITED_PACKAGES.weekday,
     singleLimited: 35.9
   },
   weekend: {
-    singleUnlimited: 63.9,
-    doubleUnlimited: 123.9,
+    unlimited_packages: DEFAULT_UNLIMITED_PACKAGES.weekend,
     singleLimited: 42.8
   },
   materials: {
@@ -46,6 +109,134 @@ function round2(value) {
   return Math.round((value + Number.EPSILON) * 100) / 100
 }
 
+function cloneDefaultUnlimitedPackages(dayType = 'weekday') {
+  const source = Array.isArray(DEFAULT_UNLIMITED_PACKAGES[dayType])
+    ? DEFAULT_UNLIMITED_PACKAGES[dayType]
+    : []
+  return source.map((item) => ({ ...item }))
+}
+
+function normalizePackageCode(code, fallbackCode = '') {
+  const normalized = String(code || '').trim()
+  if (/^[A-Za-z0-9_-]{2,64}$/.test(normalized)) return normalized
+  return String(fallbackCode || '').trim()
+}
+
+function inferPeopleCountFromCode(code = '') {
+  const normalized = String(code || '').trim()
+  const legacy = LEGACY_PLAN_CODE_META[normalized]
+  if (legacy?.peopleCount) return Math.max(1, toInteger(legacy.peopleCount, 1))
+
+  const matched = normalized.match(/(\d+)/)
+  if (!matched) return null
+  const count = toInteger(matched[1], 0)
+  if (count < 1) return null
+  return count
+}
+
+function getDayLabel(dayType = 'weekday') {
+  return dayType === 'weekend' ? '周末' : '工作日'
+}
+
+function buildUnlimitedLabel(dayType = 'weekday', peopleCount = 1) {
+  return `${getDayLabel(dayType)}${Math.max(1, toInteger(peopleCount, 1))}人不限时不限板`
+}
+
+function resolveDefaultUnlimitedCode(dayType = 'weekday', peopleCount = 1, index = 1) {
+  const legacyMap = LEGACY_DAY_TYPE_TO_PLAN_CODE[dayType] || LEGACY_DAY_TYPE_TO_PLAN_CODE.weekday
+  const safePeople = Math.max(1, toInteger(peopleCount, 1))
+  if (safePeople === 1) return legacyMap.singleUnlimited
+  if (safePeople === 2) return legacyMap.doubleUnlimited
+  return `${dayType}Unlimited${safePeople}P${Math.max(1, toInteger(index, 1))}`
+}
+
+function normalizeUnlimitedPackages(dayType = 'weekday', rawDayRule = {}) {
+  const sourceList = Array.isArray(rawDayRule?.unlimited_packages)
+    ? rawDayRule.unlimited_packages
+    : cloneDefaultUnlimitedPackages(dayType)
+
+  const mergedList = sourceList.map((item, index) => {
+    const rawCode = normalizePackageCode(item?.code)
+    const peopleCount = Math.max(
+      1,
+      toInteger(
+        item?.people_count ?? item?.peopleCount ?? inferPeopleCountFromCode(rawCode) ?? (index + 1),
+        1
+      )
+    )
+    const fallbackCode = resolveDefaultUnlimitedCode(dayType, peopleCount, index + 1)
+    const code = normalizePackageCode(rawCode, fallbackCode) || fallbackCode
+
+    return {
+      id: String(item?.id || `${dayType}_pkg_${index + 1}`).trim() || `${dayType}_pkg_${index + 1}`,
+      code,
+      label: String(item?.label || '').trim() || buildUnlimitedLabel(dayType, peopleCount),
+      people_count: peopleCount,
+      price: round2(Math.max(0, toNumber(item?.price, 0))),
+      enabled: item?.enabled !== false,
+      sort_order: toInteger(item?.sort_order ?? item?.sortOrder ?? (index + 1), index + 1)
+    }
+  })
+
+  const seenCodes = new Set()
+  const normalized = mergedList
+    .filter((item) => {
+      if (!item.code) return false
+      if (seenCodes.has(item.code)) return false
+      seenCodes.add(item.code)
+      return true
+    })
+    .sort((left, right) => {
+      if (left.sort_order !== right.sort_order) return left.sort_order - right.sort_order
+      if (left.people_count !== right.people_count) return left.people_count - right.people_count
+      return String(left.code).localeCompare(String(right.code), 'en-US')
+    })
+    .map((item, index) => ({
+      ...item,
+      sort_order: index + 1
+    }))
+
+  if (normalized.length === 0) {
+    return cloneDefaultUnlimitedPackages(dayType).map((item, index) => ({
+      ...item,
+      sort_order: index + 1
+    }))
+  }
+
+  if (!normalized.some((item) => item.enabled)) {
+    normalized[0].enabled = true
+  }
+
+  return normalized
+}
+
+function normalizeDayRule(dayType = 'weekday', rawDayRule = {}) {
+  const source = rawDayRule && typeof rawDayRule === 'object' ? rawDayRule : {}
+  const unlimitedPackages = normalizeUnlimitedPackages(dayType, source)
+
+  let singleLimited = toNumber(source.singleLimited, Number.NaN)
+  if (!Number.isFinite(singleLimited)) {
+    singleLimited = toNumber(
+      source.singleLimitedBoard,
+      toNumber(DEFAULT_BILLING_RULES[dayType]?.singleLimited, 0)
+    )
+  }
+  singleLimited = round2(Math.max(0, singleLimited))
+
+  const singleUnlimitedPackage = unlimitedPackages.find((item) => item.people_count === 1)
+    || unlimitedPackages[0]
+  const doubleUnlimitedPackage = unlimitedPackages.find((item) => item.people_count === 2)
+    || singleUnlimitedPackage
+
+  return {
+    ...source,
+    singleLimited,
+    singleUnlimited: round2(Math.max(0, toNumber(source.singleUnlimited, singleUnlimitedPackage?.price ?? 0))),
+    doubleUnlimited: round2(Math.max(0, toNumber(source.doubleUnlimited, doubleUnlimitedPackage?.price ?? 0))),
+    unlimited_packages: unlimitedPackages
+  }
+}
+
 function isLimited2hPackage(options = {}) {
   const packagePlan = String(options.packagePlan || '').trim()
   if (packagePlan === 'limited2h') return true
@@ -71,20 +262,202 @@ export function applyDeduction(totalAmount, deductionAmount) {
   return round2(Math.max(0, safeTotal - safeDeduction))
 }
 
-export function getPackagePlanBaseFee(packagePlan = '', rawRules = {}) {
+function normalizeDayType(dayType = 'weekday') {
+  return dayType === 'weekend' ? 'weekend' : 'weekday'
+}
+
+function getDefaultDayUnlimitedPackage(dayRule = {}) {
+  const packages = Array.isArray(dayRule?.unlimited_packages) ? dayRule.unlimited_packages : []
+  return packages.find((item) => item?.enabled) || packages[0] || null
+}
+
+function findDayUnlimitedPackage(dayRule = {}, selector) {
+  const packages = Array.isArray(dayRule?.unlimited_packages) ? dayRule.unlimited_packages : []
+  return packages.find((item) => selector(item)) || null
+}
+
+function buildSingleLimitedPlanMeta(dayType = 'weekday', dayRule = {}) {
+  const normalizedDayType = normalizeDayType(dayType)
+  const legacyMap = LEGACY_DAY_TYPE_TO_PLAN_CODE[normalizedDayType] || LEGACY_DAY_TYPE_TO_PLAN_CODE.weekday
+  const dayLabel = getDayLabel(normalizedDayType)
+
+  return {
+    code: legacyMap.singleLimited,
+    label: `${dayLabel}单人不限时限板`,
+    price: round2(Math.max(0, toNumber(dayRule?.singleLimited, 0))),
+    peopleCount: 1,
+    timerType: normalizedDayType,
+    limited: true,
+    enabled: true
+  }
+}
+
+function buildUnlimitedPlanMeta(dayType = 'weekday', packageItem = {}) {
+  const normalizedDayType = normalizeDayType(dayType)
+  return {
+    code: String(packageItem?.code || '').trim(),
+    label: String(packageItem?.label || '').trim() || buildUnlimitedLabel(normalizedDayType, packageItem?.people_count),
+    price: round2(Math.max(0, toNumber(packageItem?.price, 0))),
+    peopleCount: Math.max(1, toInteger(packageItem?.people_count, 1)),
+    timerType: normalizedDayType,
+    limited: false,
+    enabled: packageItem?.enabled !== false
+  }
+}
+
+export function resolveDayPlanSelection(dayType = 'weekday', planSelection = '', rawRules = {}, options = {}) {
+  const normalizedDayType = normalizeDayType(dayType)
   const rules = normalizeBillingRules(rawRules)
-  const map = {
-    limited1h: rules.limited.price1h,
-    limited2h: rules.limited.price2h,
-    weekdaySingleUnlimited: rules.weekday.singleUnlimited,
-    weekdayDoubleUnlimited: rules.weekday.doubleUnlimited,
-    weekdaySingleLimited: rules.weekday.singleLimited,
-    weekendSingleUnlimited: rules.weekend.singleUnlimited,
-    weekendDoubleUnlimited: rules.weekend.doubleUnlimited,
-    weekendSingleLimited: rules.weekend.singleLimited
+  const dayRule = rules[normalizedDayType] || {}
+  const legacyMap = LEGACY_DAY_TYPE_TO_PLAN_CODE[normalizedDayType] || LEGACY_DAY_TYPE_TO_PLAN_CODE.weekday
+  const normalizedSelection = String(planSelection || '').trim()
+  const includeDisabled = options.includeDisabled !== false
+
+  const pickUnlimitedMeta = (item) => {
+    if (!item) return null
+    if (!includeDisabled && item.enabled === false) return null
+    return buildUnlimitedPlanMeta(normalizedDayType, item)
   }
 
-  return round2(Math.max(0, toNumber(map[packagePlan], 0)))
+  if (normalizedSelection === 'singleLimited' || normalizedSelection === legacyMap.singleLimited) {
+    return buildSingleLimitedPlanMeta(normalizedDayType, dayRule)
+  }
+
+  if (normalizedSelection) {
+    const byCode = findDayUnlimitedPackage(dayRule, (item) => String(item?.code || '').trim() === normalizedSelection)
+    const matchedByCode = pickUnlimitedMeta(byCode)
+    if (matchedByCode) return matchedByCode
+  }
+
+  if (normalizedSelection === 'singleUnlimited') {
+    const byLegacyCode = findDayUnlimitedPackage(dayRule, (item) => String(item?.code || '').trim() === legacyMap.singleUnlimited)
+    const byPeople = findDayUnlimitedPackage(dayRule, (item) => Math.max(1, toInteger(item?.people_count, 1)) === 1)
+    return pickUnlimitedMeta(byLegacyCode || byPeople || getDefaultDayUnlimitedPackage(dayRule))
+  }
+
+  if (normalizedSelection === 'doubleUnlimited') {
+    const byLegacyCode = findDayUnlimitedPackage(dayRule, (item) => String(item?.code || '').trim() === legacyMap.doubleUnlimited)
+    const byPeople = findDayUnlimitedPackage(dayRule, (item) => Math.max(1, toInteger(item?.people_count, 1)) === 2)
+    return pickUnlimitedMeta(byLegacyCode || byPeople || getDefaultDayUnlimitedPackage(dayRule))
+  }
+
+  if (normalizedSelection && normalizedSelection === legacyMap.singleUnlimited) {
+    const matched = findDayUnlimitedPackage(dayRule, (item) => String(item?.code || '').trim() === normalizedSelection)
+    return pickUnlimitedMeta(matched || getDefaultDayUnlimitedPackage(dayRule))
+  }
+
+  if (normalizedSelection && normalizedSelection === legacyMap.doubleUnlimited) {
+    const matched = findDayUnlimitedPackage(dayRule, (item) => String(item?.code || '').trim() === normalizedSelection)
+    return pickUnlimitedMeta(matched || getDefaultDayUnlimitedPackage(dayRule))
+  }
+
+  const fallbackUnlimited = pickUnlimitedMeta(getDefaultDayUnlimitedPackage(dayRule))
+  if (fallbackUnlimited) return fallbackUnlimited
+  return buildSingleLimitedPlanMeta(normalizedDayType, dayRule)
+}
+
+export function getDayUnlimitedPackageOptions(dayType = 'weekday', rawRules = {}, options = {}) {
+  const normalizedDayType = normalizeDayType(dayType)
+  const rules = normalizeBillingRules(rawRules)
+  const dayRule = rules[normalizedDayType] || {}
+  const includeDisabled = Boolean(options.includeDisabled)
+
+  return (Array.isArray(dayRule.unlimited_packages) ? dayRule.unlimited_packages : [])
+    .filter((item) => includeDisabled || item?.enabled !== false)
+    .map((item) => ({
+      value: String(item?.code || ''),
+      label: String(item?.label || '').trim() || buildUnlimitedLabel(normalizedDayType, item?.people_count),
+      peopleCount: Math.max(1, toInteger(item?.people_count, 1)),
+      price: round2(Math.max(0, toNumber(item?.price, 0))),
+      enabled: item?.enabled !== false
+    }))
+}
+
+export function getDaySingleLimitedOption(dayType = 'weekday', rawRules = {}) {
+  const normalizedDayType = normalizeDayType(dayType)
+  const rules = normalizeBillingRules(rawRules)
+  const singleLimited = buildSingleLimitedPlanMeta(normalizedDayType, rules[normalizedDayType] || {})
+  return {
+    value: singleLimited.code,
+    label: singleLimited.label,
+    peopleCount: singleLimited.peopleCount,
+    price: singleLimited.price,
+    enabled: true
+  }
+}
+
+export function resolvePackagePlanInfo(packagePlan = '', rawRules = {}) {
+  const normalizedPlan = String(packagePlan || '').trim()
+  const rules = normalizeBillingRules(rawRules)
+
+  if (normalizedPlan === 'limited1h') {
+    return {
+      code: 'limited1h',
+      label: '限时1小时',
+      price: round2(Math.max(0, toNumber(rules.limited.price1h, 0))),
+      timerType: 'limited',
+      peopleCount: 1,
+      limited: false,
+      enabled: true
+    }
+  }
+
+  if (normalizedPlan === 'limited2h') {
+    return {
+      code: 'limited2h',
+      label: '限时2小时',
+      price: round2(Math.max(0, toNumber(rules.limited.price2h, 0))),
+      timerType: 'limited',
+      peopleCount: 1,
+      limited: false,
+      enabled: true
+    }
+  }
+
+  for (const dayType of ['weekday', 'weekend']) {
+    const dayRule = rules[dayType] || {}
+    const matchedUnlimited = findDayUnlimitedPackage(dayRule, (item) => String(item?.code || '').trim() === normalizedPlan)
+    if (matchedUnlimited) {
+      return buildUnlimitedPlanMeta(dayType, matchedUnlimited)
+    }
+
+    const legacyMap = LEGACY_DAY_TYPE_TO_PLAN_CODE[dayType]
+    if (normalizedPlan === legacyMap.singleLimited) {
+      return buildSingleLimitedPlanMeta(dayType, dayRule)
+    }
+  }
+
+  const legacyMeta = LEGACY_PLAN_CODE_META[normalizedPlan]
+  if (legacyMeta?.timerType) {
+    return resolveDayPlanSelection(legacyMeta.timerType, normalizedPlan, rules, { includeDisabled: true })
+  }
+
+  return null
+}
+
+export function getPackagePlanLabel(packagePlan = '', rawRules = {}) {
+  const info = resolvePackagePlanInfo(packagePlan, rawRules)
+  if (info?.label) return info.label
+  return '-'
+}
+
+export function getPackagePlanPeopleCount(packagePlan = '', rawRules = {}) {
+  const info = resolvePackagePlanInfo(packagePlan, rawRules)
+  if (info) {
+    return Math.max(1, toInteger(info.peopleCount, 1))
+  }
+
+  const normalized = String(packagePlan || '').trim()
+  if (/double/i.test(normalized)) return 2
+  const inferred = inferPeopleCountFromCode(normalized)
+  if (inferred) return inferred
+  return 1
+}
+
+export function getPackagePlanBaseFee(packagePlan = '', rawRules = {}) {
+  const info = resolvePackagePlanInfo(packagePlan, rawRules)
+  if (!info) return 0
+  return round2(Math.max(0, toNumber(info.price, 0)))
 }
 
 function normalizeMiscRules(rawMisc = {}) {
@@ -134,19 +507,16 @@ function normalizeMiscRules(rawMisc = {}) {
 }
 
 export function normalizeBillingRules(raw = {}) {
+  const weekday = normalizeDayRule('weekday', raw.weekday || {})
+  const weekend = normalizeDayRule('weekend', raw.weekend || {})
+
   return {
     limited: {
       ...DEFAULT_BILLING_RULES.limited,
       ...(raw.limited || {})
     },
-    weekday: {
-      ...DEFAULT_BILLING_RULES.weekday,
-      ...(raw.weekday || {})
-    },
-    weekend: {
-      ...DEFAULT_BILLING_RULES.weekend,
-      ...(raw.weekend || {})
-    },
+    weekday,
+    weekend,
     materials: {
       ...DEFAULT_BILLING_RULES.materials,
       ...(raw.materials || {})
@@ -284,10 +654,9 @@ function calculateTimerBestPrice(elapsedMinutes, requestedBillingType, rules, ti
   const hasOvertime = effectiveElapsedMinutes > 60
 
   const dayType = resolveTimerDayType(requestedBillingType, timerDayType, settlementTimestamp)
-  const dayLabel = dayType === 'weekend' ? '周末' : '工作日'
-  const unlimitedFee = dayType === 'weekend'
-    ? Math.max(0, toNumber(rules.weekend.singleUnlimited, 63.9))
-    : Math.max(0, toNumber(rules.weekday.singleUnlimited, 53.9))
+  const daySelection = resolveDayPlanSelection(dayType, 'singleUnlimited', rules, { includeDisabled: true })
+  const unlimitedFee = round2(Math.max(0, toNumber(daySelection?.price, 0)))
+  const dayLabel = String(daySelection?.label || `${getDayLabel(dayType)}单人不限时不限板`)
 
   if (hasOvertime && unlimitedFee < limitedTotal) {
     return {
@@ -295,7 +664,7 @@ function calculateTimerBestPrice(elapsedMinutes, requestedBillingType, rules, ti
       baseFee: unlimitedFee,
       overtimeFee: 0,
       overtimeMinutes: 0,
-      details: [`${dayLabel}单人不限时不限板(超时后自动最优)`]
+      details: [`${dayLabel}(超时后自动最优)`]
     }
   }
 
@@ -333,6 +702,16 @@ export function calculateConsumptionAmount(options = {}, rawRules = {}) {
   let overtimeFee = 0
   let effectiveOvertimeMinutes = inputOvertimeMinutes
 
+  const applyDayPlan = (dayType, selectionValue) => {
+    const plan = resolveDayPlanSelection(dayType, selectionValue, rules, { includeDisabled: true })
+    appliedBillingType = normalizeDayType(dayType)
+    effectiveOvertimeMinutes = 0
+    baseFee = Math.max(0, toNumber(plan?.price, 0))
+    if (plan?.label) {
+      details.push(plan.label)
+    }
+  }
+
   if (pricingMode === 'timer') {
     if (billingType === 'limited') {
       const timerResult = calculateTimerBestPrice(
@@ -350,33 +729,9 @@ export function calculateConsumptionAmount(options = {}, rawRules = {}) {
       effectiveOvertimeMinutes = timerResult.overtimeMinutes
       details.push(...timerResult.details)
     } else if (billingType === 'weekday') {
-      appliedBillingType = 'weekday'
-      effectiveOvertimeMinutes = 0
-
-      if (weekdayType === 'doubleUnlimited') {
-        baseFee = toNumber(rules.weekday.doubleUnlimited)
-        details.push('工作日双人不限时不限板')
-      } else if (weekdayType === 'singleLimited') {
-        baseFee = toNumber(rules.weekday.singleLimited)
-        details.push('工作日单人不限时限板')
-      } else {
-        baseFee = toNumber(rules.weekday.singleUnlimited)
-        details.push('工作日单人不限时不限板')
-      }
+      applyDayPlan('weekday', weekdayType)
     } else {
-      appliedBillingType = 'weekend'
-      effectiveOvertimeMinutes = 0
-
-      if (weekendType === 'doubleUnlimited') {
-        baseFee = toNumber(rules.weekend.doubleUnlimited)
-        details.push('周末双人不限时不限板')
-      } else if (weekendType === 'singleLimited') {
-        baseFee = toNumber(rules.weekend.singleLimited)
-        details.push('周末单人不限时限板')
-      } else {
-        baseFee = toNumber(rules.weekend.singleUnlimited)
-        details.push('周末单人不限时不限板')
-      }
+      applyDayPlan('weekend', weekendType)
     }
   } else if (billingType === 'limited') {
     const packageMinutes = duration === '2' ? 120 : 60
@@ -388,27 +743,9 @@ export function calculateConsumptionAmount(options = {}, rawRules = {}) {
     effectiveOvertimeMinutes = limitedResult.overtimeMinutes
     details.push(...limitedResult.details)
   } else if (billingType === 'weekday') {
-    if (weekdayType === 'doubleUnlimited') {
-      baseFee = toNumber(rules.weekday.doubleUnlimited)
-      details.push('工作日双人不限时不限板')
-    } else if (weekdayType === 'singleLimited') {
-      baseFee = toNumber(rules.weekday.singleLimited)
-      details.push('工作日单人不限时限板')
-    } else {
-      baseFee = toNumber(rules.weekday.singleUnlimited)
-      details.push('工作日单人不限时不限板')
-    }
+    applyDayPlan('weekday', weekdayType)
   } else {
-    if (weekendType === 'doubleUnlimited') {
-      baseFee = toNumber(rules.weekend.doubleUnlimited)
-      details.push('周末双人不限时不限板')
-    } else if (weekendType === 'singleLimited') {
-      baseFee = toNumber(rules.weekend.singleLimited)
-      details.push('周末单人不限时限板')
-    } else {
-      baseFee = toNumber(rules.weekend.singleUnlimited)
-      details.push('周末单人不限时不限板')
-    }
+    applyDayPlan('weekend', weekendType)
   }
 
   const materialFee =

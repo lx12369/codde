@@ -18,6 +18,10 @@ BEAD_PURCHASE_DESC_PATTERN = re.compile(
     r'买豆(?P<movement>入库|出库)：.+?（(?P<material_id>M\d+)）.*?(?P=movement)\s+(?P<grams>\d+(?:\.\d+)?)g，单号\s+(?P<reference_no>[A-Z0-9]+)'
 )
 TIMER_CONSUMPTION_DESC_PATTERN = re.compile(r'^计时消费')
+BEAD_SYSTEM_CUSTOMER_ID = 'C000'
+BEAD_SYSTEM_CUSTOMER_NAME = '豆仓损耗'
+EXPENSE_SYSTEM_CUSTOMER_ID = 'BEXPENSE'
+EXPENSE_SYSTEM_CUSTOMER_NAME = '系统经营支出'
 
 
 def _generate_transaction_id():
@@ -51,6 +55,42 @@ def _to_utc_naive(value):
         return value.astimezone(timezone.utc).replace(tzinfo=None)
 
     return value
+
+
+def _normalize_transaction_status(value):
+    status = str(value or '').strip().lower()
+    return status or 'completed'
+
+
+def _mark_transaction_cancelled(transaction, *, operator, reason):
+    transaction.status = 'cancelled'
+    transaction.cancelled_at = datetime.utcnow()
+    transaction.cancel_reason = str(reason or '').strip() or None
+    transaction.cancelled_by = str(operator or '').strip() or 'system'
+
+
+def _ensure_system_customer(customer_id, customer_name):
+    normalized_id = str(customer_id or '').strip()
+    normalized_name = str(customer_name or '').strip() or '系统账户'
+    if not normalized_id:
+        return None
+
+    customer = Customer.query.filter_by(id=normalized_id).first()
+    if customer:
+        if not customer.name:
+            customer.name = normalized_name
+        if normalized_id in {BEAD_SYSTEM_CUSTOMER_ID, EXPENSE_SYSTEM_CUSTOMER_ID}:
+            customer.is_deleted = True
+        return customer
+
+    customer = Customer(
+        id=normalized_id,
+        name=normalized_name,
+        is_deleted=True
+    )
+    db.session.add(customer)
+    db.session.flush()
+    return customer
 
 
 def _build_customer_snapshot_map(customer_ids):
@@ -226,6 +266,7 @@ def get_transactions():
     page = request.args.get('page', 1, type=int)
     page_size = request.args.get('page_size', 10, type=int)
     transaction_type = request.args.get('type', None)
+    status = str(request.args.get('status', 'all') or 'all').strip().lower()
     customer_id = request.args.get('customer_id', None)
     date_start = request.args.get('date_start', None)
     date_end = request.args.get('date_end', None)
@@ -234,6 +275,9 @@ def get_transactions():
 
     if transaction_type:
         query = query.filter(Transaction.type == transaction_type)
+
+    if status in {'completed', 'cancelled', 'pending'}:
+        query = query.filter(Transaction.status == status)
 
     if customer_id:
         query = query.filter(Transaction.customer_id == customer_id)
@@ -265,8 +309,12 @@ def get_transactions():
     for item in items:
         customer_id = item.get('customer_id')
         snapshot = customer_snapshot_map.get(customer_id)
-        if customer_id == 'C000':
-            item['customer_name'] = '豆仓损耗'
+        if customer_id == BEAD_SYSTEM_CUSTOMER_ID:
+            item['customer_name'] = BEAD_SYSTEM_CUSTOMER_NAME
+            item['customer_phone'] = None
+            item['customer_wechat'] = None
+        elif customer_id == EXPENSE_SYSTEM_CUSTOMER_ID:
+            item['customer_name'] = EXPENSE_SYSTEM_CUSTOMER_NAME
             item['customer_phone'] = None
             item['customer_wechat'] = None
         elif snapshot:
@@ -431,6 +479,49 @@ def create_consumption():
     return success_response(transaction.to_dict(), 'Consumption created successfully', 201)
 
 
+@transactions_bp.route('/expense', methods=['POST'])
+@token_required
+def create_expense():
+    data = request.get_json()
+
+    if not data:
+        return error_response('No data provided', 400)
+
+    amount = _to_float(data.get('amount'), None)
+    description = str(data.get('description') or '').strip()
+
+    if amount is None or amount <= 0:
+        return error_response('Valid amount is required', 400)
+
+    if not description:
+        return error_response('Description is required', 400)
+
+    operator = get_operator_name(default='unknown')
+    customer = _ensure_system_customer(EXPENSE_SYSTEM_CUSTOMER_ID, EXPENSE_SYSTEM_CUSTOMER_NAME)
+    if not customer:
+        return error_response('Expense customer is unavailable', 500)
+
+    transaction = Transaction(
+        id=_generate_transaction_id(),
+        customer_id=customer.id,
+        type='expense',
+        amount=amount,
+        description=description,
+        operator=operator
+    )
+
+    write_log(
+        'expense',
+        f'经营支出 ¥{amount:.2f}：{description}',
+        operator=operator
+    )
+
+    db.session.add(transaction)
+    db.session.commit()
+
+    return success_response(transaction.to_dict(), 'Expense created successfully', 201)
+
+
 @transactions_bp.route('/<transaction_id>', methods=['PUT'])
 @token_required
 def update_transaction(transaction_id):
@@ -583,13 +674,15 @@ def cancel_transaction(transaction_id):
     transaction = Transaction.query.filter_by(id=transaction_id).first()
     if not transaction:
         return error_response('交易记录不存在', 404)
+    if _normalize_transaction_status(transaction.status) == 'cancelled':
+        return error_response('该交易已撤销，请勿重复操作', 400)
 
     customer = Customer.query.filter_by(id=transaction.customer_id).first()
     if not customer:
         if transaction.type == 'bead_purchase':
-            customer = Customer(id=transaction.customer_id, name='豆仓损耗', is_deleted=True)
-            db.session.add(customer)
-            db.session.flush()
+            customer = _ensure_system_customer(transaction.customer_id, BEAD_SYSTEM_CUSTOMER_NAME)
+        elif transaction.type == 'expense':
+            customer = _ensure_system_customer(transaction.customer_id, EXPENSE_SYSTEM_CUSTOMER_NAME)
         else:
             return error_response('客户不存在', 404)
 
@@ -601,6 +694,7 @@ def cancel_transaction(transaction_id):
     transaction_amount = _to_float(transaction.amount, 0.0) or 0.0
     bonus_amount = _to_float(transaction.bonus_amount, 0.0) or 0.0
     operator = get_operator_name(default='unknown')
+    should_soft_cancel = False
 
     if transaction.type == 'recharge':
         rollback_amount = transaction_amount + bonus_amount
@@ -640,23 +734,38 @@ def cancel_transaction(transaction_id):
         ok, rollback_error = _rollback_bead_purchase_inventory(transaction, operator)
         if not ok:
             return error_response(rollback_error, 400)
+        _mark_transaction_cancelled(
+            transaction,
+            operator=operator,
+            reason='手动取消买豆交易'
+        )
+        should_soft_cancel = True
         log_description = (
-            f'取消买豆交易：记录 {transaction.id}，金额 ¥{transaction_amount:.2f}，库存已同步回滚'
+            f'取消买豆交易：记录 {transaction.id}，金额 ¥{transaction_amount:.2f}，库存已同步回滚并标记已撤销'
         )
         log_type = 'transaction_cancel_bead_purchase'
+    elif transaction.type == 'expense':
+        log_description = (
+            f'取消经营支出：记录 {transaction.id}，金额 ¥{transaction_amount:.2f}'
+        )
+        log_type = 'transaction_cancel_expense'
     else:
         return error_response('暂不支持取消该交易类型', 400)
 
     write_log(log_type, log_description, operator=operator)
 
-    db.session.delete(transaction)
+    if not should_soft_cancel:
+        db.session.delete(transaction)
     db.session.commit()
 
     return success_response(
         {
             'transaction_id': transaction_id,
             'customer_id': customer.id,
-            'balance': balance.balance
+            'balance': balance.balance,
+            'status': transaction.status if should_soft_cancel else None
         },
-        '交易取消成功'
+        '交易撤销成功' if should_soft_cancel else '交易取消成功'
     )
+
+

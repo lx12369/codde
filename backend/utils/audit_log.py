@@ -35,6 +35,13 @@ LOG_TYPE_META = {
         'action_label': '消费',
         'type_label': '消费'
     },
+    'expense': {
+        'module': 'transaction',
+        'module_label': '交易',
+        'action': 'expense',
+        'action_label': '经营支出',
+        'type_label': '经营支出'
+    },
     'transaction_cancel_recharge': {
         'module': 'transaction',
         'module_label': '交易',
@@ -48,6 +55,13 @@ LOG_TYPE_META = {
         'action': 'cancel_consumption',
         'action_label': '取消消费',
         'type_label': '取消消费'
+    },
+    'transaction_cancel_expense': {
+        'module': 'transaction',
+        'module_label': '交易',
+        'action': 'cancel_expense',
+        'action_label': '取消经营支出',
+        'type_label': '取消经营支出'
     },
     'transaction_cancel_bead_purchase': {
         'module': 'transaction',
@@ -275,14 +289,21 @@ def get_operator_name(default='system'):
     return default
 
 
-def write_log(log_type, description, operator=None):
+def write_log(log_type, description, operator=None, context=None):
     text = str(description or '').strip()
     if len(text) > 255:
         text = f'{text[:252]}...'
 
+    normalized_context = None
+    if isinstance(context, dict):
+        normalized_context = context
+    elif context is not None:
+        normalized_context = {'value': str(context)}
+
     log = Log(
         type=str(log_type or '').strip() or 'other',
         description=text or '-',
+        context=normalized_context,
         operator=(operator or get_operator_name()).strip() or 'system'
     )
     db.session.add(log)
@@ -367,3 +388,4 @@ def build_filter_options():
         'modules': module_options,
         'actions': action_options
     }
+

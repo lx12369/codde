@@ -66,7 +66,8 @@ export const transactionApi = {
   getTransactions: (params) => api.get('/transactions', { params }),
   getTransaction: (id) => api.get(`/transactions/${id}`),
   createRecharge: (data) => api.post('/transactions/recharge', data),
-  createConsumption: (data) => api.post('/transactions/consumption', data)
+  createConsumption: (data) => api.post('/transactions/consumption', data),
+  createExpense: (data) => api.post('/transactions/expense', data)
 }
 
 export const activityApi = {
@@ -124,3 +125,4 @@ export const dataApi = {
 }
 
 export default api
+

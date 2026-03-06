@@ -102,6 +102,16 @@ def get_stats():
     ).scalar()
     today_consumption_amount = float(today_consumption_amount_result) if today_consumption_amount_result else 0.0
 
+    today_expense_amount_result = db.session.query(
+        func.coalesce(func.sum(Transaction.amount), 0)
+    ).filter(
+        Transaction.type.in_(['expense', 'bead_purchase']),
+        Transaction.transaction_time >= today_start,
+        Transaction.transaction_time < tomorrow_start,
+        db.or_(Transaction.status.is_(None), Transaction.status != 'cancelled')
+    ).scalar()
+    today_expense_amount = float(today_expense_amount_result) if today_expense_amount_result else 0.0
+
     today_bead_loss_amount_result = db.session.query(
         func.coalesce(
             func.sum(
@@ -119,7 +129,7 @@ def get_stats():
         BeadInventoryLedger.created_at < tomorrow_start
     ).scalar()
     today_bead_loss_amount = float(today_bead_loss_amount_result) if today_bead_loss_amount_result else 0.0
-    today_net_income = today_consumption_amount - today_bead_loss_amount
+    today_net_income = today_consumption_amount - today_expense_amount - today_bead_loss_amount
 
     today_consumption_records = Transaction.query.with_entities(Transaction.description).filter(
         Transaction.type == 'consumption',
@@ -142,6 +152,7 @@ def get_stats():
         'today_consumptions': today_consumptions,
         'today_consumption_people': today_consumption_people,
         'today_consumption_amount': today_consumption_amount,
+        'today_expense_amount': today_expense_amount,
         'today_bead_loss_amount': today_bead_loss_amount,
         'today_net_income': today_net_income,
         'total_transactions': total_transactions,

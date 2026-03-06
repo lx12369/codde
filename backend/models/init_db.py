@@ -11,8 +11,10 @@ def init_db(app):
     with app.app_context():
         db.create_all()
         ensure_customer_columns()
+        ensure_transaction_columns()
         ensure_active_timer_columns()
         ensure_bead_material_columns()
+        ensure_log_columns()
         ensure_builtin_mard_materials()
         create_default_admin()
 
@@ -43,6 +45,31 @@ def ensure_customer_columns():
     for sql in alter_statements:
         db.session.execute(text(sql))
 
+    db.session.commit()
+
+
+def ensure_transaction_columns():
+    inspector = inspect(db.engine)
+    if 'transactions' not in inspector.get_table_names():
+        return
+
+    existing_columns = {column['name'] for column in inspector.get_columns('transactions')}
+    alter_statements = []
+
+    if 'status' not in existing_columns:
+        alter_statements.append("ALTER TABLE transactions ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'completed'")
+    if 'cancelled_at' not in existing_columns:
+        alter_statements.append('ALTER TABLE transactions ADD COLUMN cancelled_at DATETIME')
+    if 'cancel_reason' not in existing_columns:
+        alter_statements.append('ALTER TABLE transactions ADD COLUMN cancel_reason VARCHAR(255)')
+    if 'cancelled_by' not in existing_columns:
+        alter_statements.append('ALTER TABLE transactions ADD COLUMN cancelled_by VARCHAR(50)')
+
+    for sql in alter_statements:
+        db.session.execute(text(sql))
+
+    # 历史交易统一回填为 completed，避免前端状态为空。
+    db.session.execute(text("UPDATE transactions SET status = 'completed' WHERE status IS NULL OR TRIM(status) = ''"))
     db.session.commit()
 
 
@@ -97,6 +124,26 @@ def ensure_bead_material_columns():
         alter_statements.append('ALTER TABLE bead_materials ADD COLUMN common_color BOOLEAN NOT NULL DEFAULT 0')
     if 'market_price_per_500g' not in existing_columns:
         alter_statements.append('ALTER TABLE bead_materials ADD COLUMN market_price_per_500g FLOAT NOT NULL DEFAULT 50')
+
+    if not alter_statements:
+        return
+
+    for sql in alter_statements:
+        db.session.execute(text(sql))
+
+    db.session.commit()
+
+
+def ensure_log_columns():
+    inspector = inspect(db.engine)
+    if 'logs' not in inspector.get_table_names():
+        return
+
+    existing_columns = {column['name'] for column in inspector.get_columns('logs')}
+    alter_statements = []
+
+    if 'context' not in existing_columns:
+        alter_statements.append('ALTER TABLE logs ADD COLUMN context TEXT')
 
     if not alter_statements:
         return

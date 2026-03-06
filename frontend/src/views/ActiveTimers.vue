@@ -1,4 +1,4 @@
-﻿<script setup>
+<script setup>
 import { ref, reactive, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import api from '@/api'
 import { useAuthStore } from '@/stores'
@@ -7,14 +7,15 @@ import TimerConsumeDialog from '@/components/timers/TimerConsumeDialog.vue'
 import {
   createTimerConsumeForm,
   timerTypeOptions as sharedTimerTypeOptions,
-  timerPackagePlanOptionsByType as sharedTimerPackagePlanOptionsByType,
+  buildTimerPackagePlanOptionsByType,
   getDefaultTimerPackagePlan,
   validateTimerConsumeForm as validateSharedTimerConsumeForm,
   buildTimerConsumeRequestPayload,
   TABLE_AREA_OPTIONS,
   TABLE_SEAT_OPTIONS,
   buildTableNo,
-  isDoublePackagePlan
+  getRequiredExtraSeatCount,
+  getTimerConsumeSeatPayload
 } from '@/utils/timerConsume'
 import {
   normalizeBillingRules,
@@ -22,7 +23,10 @@ import {
   buildConsumptionDescription,
   calculateMeituanDeduction,
   applyDeduction,
-  getPackagePlanBaseFee
+  getPackagePlanBaseFee,
+  getPackagePlanLabel as getPackagePlanLabelByRules,
+  getPackagePlanPeopleCount,
+  resolvePackagePlanInfo
 } from '@/utils/consumptionCalculator'
 import { getEffectiveBillingDayType } from '@/utils/dayType'
 
@@ -47,7 +51,8 @@ const showUpstairsModal = ref(false)
 const restoreRoomAfterAddModal = ref('')
 const warningQueue = ref([])
 const activeWarning = ref(null)
-const pendingDoubleSeatStart = ref(null)
+const seatSelectionMode = ref('single')
+const pendingMultiSeatSelection = ref(null)
 const selectedTimer = ref(null)
 const editingTimer = ref(null)
 const addTimerDialogRef = ref(null)
@@ -87,8 +92,8 @@ const addForm = reactive(createTimerConsumeForm())
 const settleForm = reactive({
   billingType: 'limited',
   duration: '1',
-  weekdayType: 'singleUnlimited',
-  weekendType: 'singleUnlimited',
+  weekdayType: '',
+  weekendType: '',
   overtimeMinutes: 0,
   largeImages: 0,
   extraSmallImages: 0,
@@ -106,8 +111,10 @@ const editForm = reactive({
   tableArea: TABLE_AREA_OPTIONS[0],
   tableSeat: TABLE_SEAT_OPTIONS[0],
   tableNo: '',
+  extraTableSelections: [],
+  extraTableNos: [],
   secondTableArea: TABLE_AREA_OPTIONS[0],
-  secondTableSeat: TABLE_SEAT_OPTIONS[0],
+  secondTableSeat: '',
   secondTableNo: '',
   packagePlan: '',
   notes: '',
@@ -168,18 +175,6 @@ const UPSTAIRS_LAYOUT_TABLES = [
   { area: 'M', seatCount: 3, seatColumns: 3, shape: 'wide' }
 ]
 
-const weekdayTypeOptions = [
-  { value: 'singleUnlimited', label: '单人不限时不限板' },
-  { value: 'doubleUnlimited', label: '双人不限时不限板' },
-  { value: 'singleLimited', label: '单人不限时限板' }
-]
-
-const weekendTypeOptions = [
-  { value: 'singleUnlimited', label: '单人不限时不限板' },
-  { value: 'doubleUnlimited', label: '双人不限时不限板' },
-  { value: 'singleLimited', label: '单人不限时限板' }
-]
-
 const enabledMiscItems = computed(() => {
   const source = Array.isArray(billingRules.value?.misc?.items) ? billingRules.value.misc.items : []
   return source
@@ -198,18 +193,21 @@ const enabledMiscItems = computed(() => {
     })
 })
 
-const addPackagePlanOptionsByType = sharedTimerPackagePlanOptionsByType
+const addPackagePlanOptionsByType = computed(() => buildTimerPackagePlanOptionsByType(billingRules.value))
+const filterPackagePlanOptionsByType = computed(() => buildTimerPackagePlanOptionsByType(billingRules.value, { includeDisabled: true }))
+const weekdayTypeOptions = computed(() => addPackagePlanOptionsByType.value.weekday || [])
+const weekendTypeOptions = computed(() => addPackagePlanOptionsByType.value.weekend || [])
 
-const allPackagePlanOptions = computed(() => Object.values(addPackagePlanOptionsByType).flat())
+const allPackagePlanOptions = computed(() => Object.values(filterPackagePlanOptionsByType.value).flat())
 const filterPackagePlanOptions = computed(() => {
   if (!filterForm.timerType) {
     return allPackagePlanOptions.value
   }
-  return addPackagePlanOptionsByType[filterForm.timerType] || []
+  return filterPackagePlanOptionsByType.value[filterForm.timerType] || []
 })
 
 function getDefaultAddPackagePlan(timerType = 'limited') {
-  return getDefaultTimerPackagePlan(timerType)
+  return getDefaultTimerPackagePlan(timerType, billingRules.value)
 }
 
 const hasActiveFilters = computed(() => (
@@ -433,19 +431,12 @@ function getRecommendedOvertimeMinutes(elapsedMinutes) {
 }
 
 function resolvePlanTypeFromPackagePlan(timerType, packagePlan) {
-  if (timerType === 'weekday') {
-    if (packagePlan === 'weekdayDoubleUnlimited') return 'doubleUnlimited'
-    if (packagePlan === 'weekdaySingleLimited') return 'singleLimited'
-    return 'singleUnlimited'
+  if (timerType !== 'weekday' && timerType !== 'weekend') return ''
+  const info = resolvePackagePlanInfo(packagePlan, billingRules.value)
+  if (info?.timerType === timerType) {
+    return info.code
   }
-
-  if (timerType === 'weekend') {
-    if (packagePlan === 'weekendDoubleUnlimited') return 'doubleUnlimited'
-    if (packagePlan === 'weekendSingleLimited') return 'singleLimited'
-    return 'singleUnlimited'
-  }
-
-  return ''
+  return getDefaultAddPackagePlan(timerType)
 }
 function applyRecommendedSettlementPlan() {
   if (!selectedTimer.value) return
@@ -481,14 +472,14 @@ function applyRecommendedSettlementPlan() {
 
   if (recommended.billingType === 'weekday') {
     settleForm.billingType = 'weekday'
-    settleForm.weekdayType = 'singleUnlimited'
+    settleForm.weekdayType = getDefaultAddPackagePlan('weekday')
     settleForm.overtimeMinutes = 0
     return
   }
 
   if (recommended.billingType === 'weekend') {
     settleForm.billingType = 'weekend'
-    settleForm.weekendType = 'singleUnlimited'
+    settleForm.weekendType = getDefaultAddPackagePlan('weekend')
     settleForm.overtimeMinutes = 0
     return
   }
@@ -520,17 +511,7 @@ function getTimerTypeLabel(type) {
 }
 
 function getPackagePlanLabel(plan) {
-  const map = {
-    limited1h: '限时1小时',
-    limited2h: '限时2小时',
-    weekdaySingleUnlimited: '工作日单人不限时不限板',
-    weekdayDoubleUnlimited: '工作日双人不限时不限板',
-    weekdaySingleLimited: '工作日单人不限时限板',
-    weekendSingleUnlimited: '周末单人不限时不限板',
-    weekendDoubleUnlimited: '周末双人不限时不限板',
-    weekendSingleLimited: '周末单人不限时限板'
-  }
-  return map[plan] || '-'
+  return getPackagePlanLabelByRules(plan, billingRules.value)
 }
 
 function normalizeTableNo(value) {
@@ -559,19 +540,28 @@ function parseExactTableNo(tableNo) {
   }
 }
 
-function parseTableNoParts(tableNo) {
+function parseTableNoParts(
+  tableNo,
+  fallbackArea = TABLE_AREA_OPTIONS[0],
+  fallbackSeat = TABLE_SEAT_OPTIONS[0]
+) {
+  const normalizedFallbackArea = TABLE_AREA_OPTIONS.includes(String(fallbackArea || '').trim().toUpperCase())
+    ? String(fallbackArea || '').trim().toUpperCase()
+    : TABLE_AREA_OPTIONS[0]
+  const rawFallbackSeat = String(fallbackSeat || '').trim()
+  const normalizedFallbackSeat = TABLE_SEAT_OPTIONS.includes(rawFallbackSeat) ? rawFallbackSeat : ''
   const parsed = parseExactTableNo(tableNo)
   if (!parsed) {
     return {
-      tableArea: TABLE_AREA_OPTIONS[0],
-      tableSeat: TABLE_SEAT_OPTIONS[0]
+      tableArea: normalizedFallbackArea,
+      tableSeat: normalizedFallbackSeat
     }
   }
   const tableArea = parsed.tableArea
   const tableSeat = parsed.tableSeat
   return {
-    tableArea: TABLE_AREA_OPTIONS.includes(tableArea) ? tableArea : TABLE_AREA_OPTIONS[0],
-    tableSeat: TABLE_SEAT_OPTIONS.includes(tableSeat) ? tableSeat : TABLE_SEAT_OPTIONS[0]
+    tableArea: TABLE_AREA_OPTIONS.includes(tableArea) ? tableArea : normalizedFallbackArea,
+    tableSeat: TABLE_SEAT_OPTIONS.includes(tableSeat) ? tableSeat : normalizedFallbackSeat
   }
 }
 
@@ -581,15 +571,60 @@ function getTimerOccupiedTableNos(timer) {
   if (isValidTableNo(firstSeat)) {
     seats.push(firstSeat)
   }
+  const seen = new Set(seats)
+  getTimerExtraTableNos(timer).forEach((seatNo) => {
+    if (seen.has(seatNo)) return
+    seen.add(seatNo)
+    seats.push(seatNo)
+  })
+  return seats
+}
 
-  if (isDoublePackagePlan(timer?.packagePlan)) {
-    const secondSeat = normalizeTableNo(timer?.secondTableNo)
-    if (isValidTableNo(secondSeat) && secondSeat !== firstSeat) {
-      seats.push(secondSeat)
-    }
+function getTimerExtraTableNos(timer, options = {}) {
+  const includeLegacy = options.includeLegacy !== false
+  const limitByPackage = options.limitByPackage === true
+  const normalized = []
+  const seen = new Set()
+  const pushSeat = (rawSeatNo) => {
+    const seatNo = normalizeTableNo(rawSeatNo)
+    if (!isValidTableNo(seatNo)) return
+    if (seen.has(seatNo)) return
+    seen.add(seatNo)
+    normalized.push(seatNo)
   }
 
-  return seats
+  if (Array.isArray(timer?.extraTableNos)) {
+    timer.extraTableNos.forEach((item) => pushSeat(item))
+  }
+  if (includeLegacy) {
+    pushSeat(timer?.secondTableNo)
+  }
+
+  if (!limitByPackage) return normalized
+
+  const requiredCount = getRequiredExtraSeatCount(timer?.packagePlan, billingRules.value)
+  if (requiredCount <= 0) return []
+  return normalized.slice(0, requiredCount)
+}
+
+function buildTimerExtraSeatSelections(timer, requiredCount = null) {
+  const baseTable = parseTableNoParts(timer?.tableNo)
+  const fallbackArea = baseTable.tableArea || TABLE_AREA_OPTIONS[0]
+  const resolvedRequiredCount = requiredCount === null
+    ? getRequiredExtraSeatCount(timer?.packagePlan, billingRules.value)
+    : Math.max(0, Math.floor(Number(requiredCount) || 0))
+  if (resolvedRequiredCount <= 0) return []
+
+  const sourceSeats = getTimerExtraTableNos(timer, { limitByPackage: false })
+  return Array.from({ length: resolvedRequiredCount }, (_, index) => {
+    const parsed = parseTableNoParts(sourceSeats[index], fallbackArea, '')
+    const tableNo = buildTableNo(parsed.tableArea, parsed.tableSeat)
+    return {
+      tableArea: parsed.tableArea || fallbackArea,
+      tableSeat: parsed.tableSeat || '',
+      tableNo
+    }
+  })
 }
 
 function formatTimerTableNoDisplay(timer) {
@@ -975,33 +1010,55 @@ function normalizeStoredMiscSelections(rawMiscSelections) {
 }
 
 function parseTimerNotes(rawNotes) {
-  if (!rawNotes) {
-    return {
-      note: '',
-      packagePlan: '',
-      secondTableNo: '',
-      meituanCustomer: false,
-      meituanPackageBaseFee: 0,
-      timing: {
-        elapsedSeconds: 0,
-        resumedAt: ''
-      },
-      materials: {
-        largeImages: 0,
-        extraSmallImages: 0,
-        extraLargeImages: 0
-      },
-      miscSelections: {}
+  const createDefaultNotes = (note = '') => ({
+    note,
+    packagePlan: '',
+    extraTableNos: [],
+    secondTableNo: '',
+    meituanCustomer: false,
+    meituanPackageBaseFee: 0,
+    timing: {
+      elapsedSeconds: 0,
+      resumedAt: ''
+    },
+    materials: {
+      largeImages: 0,
+      extraSmallImages: 0,
+      extraLargeImages: 0
+    },
+    miscSelections: {}
+  })
+  const normalizeExtraSeatList = (rawExtraTableNos, legacySecondTableNo = '') => {
+    const source = Array.isArray(rawExtraTableNos) ? rawExtraTableNos : []
+    const list = []
+    const seen = new Set()
+    const pushSeat = (rawSeatNo) => {
+      const tableNo = normalizeTableNo(rawSeatNo)
+      if (!isValidTableNo(tableNo)) return
+      if (seen.has(tableNo)) return
+      seen.add(tableNo)
+      list.push(tableNo)
     }
+    source.forEach((item) => pushSeat(item))
+    if (list.length === 0 && legacySecondTableNo) {
+      pushSeat(legacySecondTableNo)
+    }
+    return list
+  }
+
+  if (!rawNotes) {
+    return createDefaultNotes('')
   }
 
   try {
     const parsed = JSON.parse(rawNotes)
     if (parsed && typeof parsed === 'object') {
+      const extraTableNos = normalizeExtraSeatList(parsed.extraTableNos, parsed.secondTableNo)
       return {
         note: parsed.note || '',
         packagePlan: parsed.packagePlan || '',
-        secondTableNo: normalizeTableNo(parsed.secondTableNo),
+        extraTableNos,
+        secondTableNo: extraTableNos[0] || '',
         meituanCustomer: Boolean(parsed.meituanCustomer),
         meituanPackageBaseFee: Number(parsed.meituanPackageBaseFee) || 0,
         timing: {
@@ -1020,23 +1077,7 @@ function parseTimerNotes(rawNotes) {
     // fallback to plain text.
   }
 
-  return {
-    note: String(rawNotes),
-    packagePlan: '',
-    secondTableNo: '',
-    meituanCustomer: false,
-    meituanPackageBaseFee: 0,
-    timing: {
-      elapsedSeconds: 0,
-      resumedAt: ''
-    },
-    materials: {
-      largeImages: 0,
-      extraSmallImages: 0,
-      extraLargeImages: 0
-    },
-    miscSelections: {}
-  }
+  return createDefaultNotes(String(rawNotes))
 }
 
 function normalizeTimer(timer = {}) {
@@ -1067,6 +1108,7 @@ function normalizeTimer(timer = {}) {
     startTime: timer.startTime ?? timer.start_time ?? null,
     notes: parsedNotes.note,
     packagePlan: parsedNotes.packagePlan || '',
+    extraTableNos: Array.isArray(parsedNotes.extraTableNos) ? parsedNotes.extraTableNos : [],
     secondTableNo: parsedNotes.secondTableNo || '',
     meituanCustomer: Boolean(parsedNotes.meituanCustomer),
     meituanPackageBaseFee: Number(parsedNotes.meituanPackageBaseFee) || 0,
@@ -1143,11 +1185,13 @@ function collectMiscSelectionErrors(selectionMap = {}) {
 }
 
 function buildTimerNotesPayload(timer, materials, miscSelections = null) {
+  const extraTableNos = getTimerExtraTableNos(timer, { limitByPackage: false })
   const sourceMiscSelections = miscSelections === null ? timer?.miscSelections : miscSelections
   return JSON.stringify({
     note: timer?.notes || '',
     packagePlan: timer?.packagePlan || '',
-    secondTableNo: timer?.secondTableNo || '',
+    extraTableNos,
+    secondTableNo: extraTableNos[0] || '',
     meituanCustomer: Boolean(timer?.meituanCustomer),
     meituanPackageBaseFee: Number(timer?.meituanPackageBaseFee) || 0,
     timing: {
@@ -1281,7 +1325,7 @@ async function fetchTimers() {
 }
 
 function resetAddForm() {
-  Object.assign(addForm, createTimerConsumeForm())
+  Object.assign(addForm, createTimerConsumeForm('', billingRules.value))
   syncAddMiscSelections({})
   addErrors.value = {}
 }
@@ -1313,7 +1357,7 @@ async function syncAddBalance(customerId = '') {
 }
 
 function applyAddForm(nextForm = {}) {
-  Object.assign(addForm, createTimerConsumeForm(), nextForm)
+  Object.assign(addForm, createTimerConsumeForm('', billingRules.value), nextForm)
 }
 
 function resetFilters() {
@@ -1323,21 +1367,87 @@ function resetFilters() {
 }
 
 function resetEditForm(timer = null) {
+  const packagePlan = timer?.packagePlan || getDefaultAddPackagePlan(timer?.timerType || 'limited')
+  const requiredExtraSeatCount = getRequiredExtraSeatCount(packagePlan, billingRules.value)
   const tableParts = parseTableNoParts(timer?.tableNo)
-  const secondTableParts = parseTableNoParts(timer?.secondTableNo)
+  const extraTableSelections = buildTimerExtraSeatSelections(timer, requiredExtraSeatCount)
+  const extraTableNos = extraTableSelections
+    .map((item) => normalizeTableNo(item?.tableNo || buildTableNo(item?.tableArea, item?.tableSeat)))
+    .filter((item) => Boolean(item))
+  const firstExtraSeat = extraTableSelections[0] || {
+    tableArea: tableParts.tableArea,
+    tableSeat: '',
+    tableNo: ''
+  }
+
   editForm.tableArea = tableParts.tableArea
   editForm.tableSeat = tableParts.tableSeat
   editForm.tableNo = buildTableNo(tableParts.tableArea, tableParts.tableSeat)
-  editForm.secondTableArea = secondTableParts.tableArea
-  editForm.secondTableSeat = secondTableParts.tableSeat
-  editForm.secondTableNo = buildTableNo(secondTableParts.tableArea, secondTableParts.tableSeat)
-  editForm.packagePlan = timer?.packagePlan || getDefaultAddPackagePlan(timer?.timerType || 'limited')
+  editForm.extraTableSelections = extraTableSelections
+  editForm.extraTableNos = extraTableNos
+  editForm.secondTableArea = firstExtraSeat.tableArea || tableParts.tableArea
+  editForm.secondTableSeat = firstExtraSeat.tableSeat || ''
+  editForm.secondTableNo = firstExtraSeat.tableNo || ''
+  editForm.packagePlan = packagePlan
   editForm.notes = timer?.notes || ''
   editForm.largeImages = Number(timer?.materials?.largeImages) || 0
   editForm.extraSmallImages = Number(timer?.materials?.extraSmallImages) || 0
   editForm.extraLargeImages = Number(timer?.materials?.extraLargeImages) || 0
   syncEditMiscSelections(timer?.miscSelections || {})
   editErrors.value = {}
+}
+
+function syncEditSeatPayload() {
+  const seatPayload = getTimerConsumeSeatPayload(editForm, billingRules.value)
+  const firstExtraSeat = seatPayload.extraTableSelections[0] || {
+    tableArea: seatPayload.tableArea,
+    tableSeat: '',
+    tableNo: ''
+  }
+  editForm.tableArea = seatPayload.tableArea
+  editForm.tableSeat = seatPayload.tableSeat
+  editForm.tableNo = seatPayload.tableNo
+  editForm.extraTableSelections = seatPayload.extraTableSelections
+  editForm.extraTableNos = seatPayload.extraTableNos
+  editForm.secondTableArea = firstExtraSeat.tableArea
+  editForm.secondTableSeat = firstExtraSeat.tableSeat
+  editForm.secondTableNo = firstExtraSeat.tableNo
+}
+
+function updateEditExtraSeatArea(index, value) {
+  const list = Array.isArray(editForm.extraTableSelections)
+    ? editForm.extraTableSelections.map((item) => ({ ...item }))
+    : []
+  if (!list[index]) return
+  const area = String(value || '').trim().toUpperCase()
+  list[index] = {
+    ...list[index],
+    tableArea: area,
+    tableNo: buildTableNo(area, list[index].tableSeat)
+  }
+  editForm.extraTableSelections = list
+  syncEditSeatPayload()
+}
+
+function updateEditExtraSeatSeat(index, value) {
+  const list = Array.isArray(editForm.extraTableSelections)
+    ? editForm.extraTableSelections.map((item) => ({ ...item }))
+    : []
+  if (!list[index]) return
+  const seat = String(value || '').trim()
+  list[index] = {
+    ...list[index],
+    tableSeat: seat,
+    tableNo: buildTableNo(list[index].tableArea, seat)
+  }
+  editForm.extraTableSelections = list
+  syncEditSeatPayload()
+}
+
+function getEditExtraSeatError(index) {
+  return editErrors.value?.[`extraTableNos.${index}`]
+    || (index === 0 ? editErrors.value?.secondTableNo : '')
+    || ''
 }
 
 function isMeituanCustomerByName(name) {
@@ -1348,8 +1458,8 @@ function isMeituanCustomerByName(name) {
 function resetSettleForm(timer = null) {
   settleForm.billingType = timer?.timerType || 'limited'
   settleForm.duration = '1'
-  settleForm.weekdayType = 'singleUnlimited'
-  settleForm.weekendType = 'singleUnlimited'
+  settleForm.weekdayType = getDefaultAddPackagePlan('weekday')
+  settleForm.weekendType = getDefaultAddPackagePlan('weekend')
   settleForm.overtimeMinutes = 0
   settleForm.largeImages = Number(timer?.materials?.largeImages) || 0
   settleForm.extraSmallImages = Number(timer?.materials?.extraSmallImages) || 0
@@ -1392,34 +1502,42 @@ async function openAddModal() {
 }
 
 function openLivingRoomModal() {
+  deactivateMultiSeatSelectionMode()
   showLivingRoomModal.value = true
 }
 
 function closeLivingRoomModal() {
+  deactivateMultiSeatSelectionMode()
   showLivingRoomModal.value = false
 }
 
 function openSmallRoomModal() {
+  deactivateMultiSeatSelectionMode()
   showSmallRoomModal.value = true
 }
 
 function closeSmallRoomModal() {
+  deactivateMultiSeatSelectionMode()
   showSmallRoomModal.value = false
 }
 
 function openGardenModal() {
+  deactivateMultiSeatSelectionMode()
   showGardenModal.value = true
 }
 
 function closeGardenModal() {
+  deactivateMultiSeatSelectionMode()
   showGardenModal.value = false
 }
 
 function openUpstairsModal() {
+  deactivateMultiSeatSelectionMode()
   showUpstairsModal.value = true
 }
 
 function closeUpstairsModal() {
+  deactivateMultiSeatSelectionMode()
   showUpstairsModal.value = false
 }
 
@@ -1434,71 +1552,183 @@ async function openAddModalForSeat(tableArea, seatNo, occupied = false) {
   addForm.tableArea = area
   addForm.tableSeat = seat
   addForm.tableNo = buildTableNo(area, seat)
+  addForm.extraTableSelections = []
+  addForm.extraTableNos = []
   addForm.secondTableArea = area
   addForm.secondTableSeat = ''
   addForm.secondTableNo = ''
 }
 
-function clearPendingDoubleSeatStart() {
-  pendingDoubleSeatStart.value = null
+function clearPendingMultiSeatSelection() {
+  pendingMultiSeatSelection.value = null
 }
 
-function resolveDoublePackagePreset() {
+function activateMultiSeatSelectionMode() {
+  if (seatSelectionMode.value === 'multi') return
+  seatSelectionMode.value = 'multi'
+  clearPendingMultiSeatSelection()
+  showFeedback('info', '已进入多人选座模式，左键依次点选座位，选好后点确认')
+}
+
+function deactivateMultiSeatSelectionMode(showMessage = false) {
+  seatSelectionMode.value = 'single'
+  clearPendingMultiSeatSelection()
+  if (showMessage) {
+    showFeedback('info', '已切回单座位模式')
+  }
+}
+
+function getPendingSeatDisplayText() {
+  const seats = Array.isArray(pendingMultiSeatSelection.value?.seats)
+    ? pendingMultiSeatSelection.value.seats
+    : []
+  if (seats.length === 0) return ''
+  return seats.map((item) => `${item.tableArea}${item.seatNo}`).join(' / ')
+}
+
+function isPendingSeatSelected(tableArea, seatNo) {
+  const area = String(tableArea || '').trim().toUpperCase()
+  const seat = String(seatNo || '').trim()
+  return Array.isArray(pendingMultiSeatSelection.value?.seats)
+    && pendingMultiSeatSelection.value.seats.some((item) => item.tableArea === area && item.seatNo === seat)
+}
+
+const pendingMultiSeatCount = computed(() => (
+  Array.isArray(pendingMultiSeatSelection.value?.seats)
+    ? pendingMultiSeatSelection.value.seats.length
+    : 0
+))
+
+const pendingMultiSeatPreset = computed(() => {
+  if (pendingMultiSeatCount.value < 2) return null
+  return resolveMultiPersonPackagePresetByPeopleCount(pendingMultiSeatCount.value)
+})
+
+function resolveMultiPersonPackagePresetByPeopleCount(peopleCount) {
+  const normalizedPeopleCount = Math.max(2, Math.floor(Number(peopleCount) || 0))
   const dayType = getEffectiveBillingDayType(new Date())
-  if (dayType === 'weekend') {
-    return { timerType: 'weekend', packagePlan: 'weekendDoubleUnlimited' }
-  }
-  return { timerType: 'weekday', packagePlan: 'weekdayDoubleUnlimited' }
-}
+  const primaryType = dayType === 'weekend' ? 'weekend' : 'weekday'
+  const searchOrder = primaryType === 'weekend'
+    ? ['weekend', 'weekday']
+    : ['weekday', 'weekend']
 
-function handleSeatRightClick(tableArea, seatNo, occupied = false) {
-  if (occupied) {
-    showFeedback('error', `该座位已有人：${tableArea}${seatNo}`)
-    return
+  for (const timerType of searchOrder) {
+    const dayOptions = addPackagePlanOptionsByType.value[timerType] || []
+    const multiPerson = dayOptions.find((item) => (
+      getPackagePlanPeopleCount(item.value, billingRules.value) === normalizedPeopleCount
+    ))
+    if (multiPerson?.value) {
+      return {
+        timerType,
+        packagePlan: multiPerson.value,
+        peopleCount: normalizedPeopleCount
+      }
+    }
   }
-  pendingDoubleSeatStart.value = {
-    tableArea: String(tableArea || '').trim().toUpperCase(),
-    seatNo: String(seatNo || '').trim()
-  }
-  showFeedback('info', `已选第一座位 ${tableArea}${seatNo}，请左键点击第二座位创建双人套餐`)
+
+  return null
 }
 
 async function handleSeatLeftClick(tableArea, seatNo, occupied = false) {
   const area = String(tableArea || '').trim().toUpperCase()
   const seat = String(seatNo || '').trim()
 
-  if (!pendingDoubleSeatStart.value) {
+  if (seatSelectionMode.value !== 'multi') {
     await openAddModalForSeat(area, seat, occupied)
     return
   }
 
   if (occupied) {
-    showFeedback('error', `第二座位已有人：${area}${seat}`)
+    showFeedback('error', `该座位已有人：${area}${seat}`)
     return
   }
 
-  const first = pendingDoubleSeatStart.value
-  if (first.tableArea === area && first.seatNo === seat) {
-    showFeedback('error', '第二座位不能与第一座位相同')
+  const currentSeats = Array.isArray(pendingMultiSeatSelection.value?.seats)
+    ? [...pendingMultiSeatSelection.value.seats]
+    : []
+  const existingIndex = currentSeats.findIndex((item) => item.tableArea === area && item.seatNo === seat)
+
+  if (existingIndex >= 0) {
+    currentSeats.splice(existingIndex, 1)
+    pendingMultiSeatSelection.value = currentSeats.length > 0
+      ? { seats: currentSeats }
+      : null
+    if (currentSeats.length > 0) {
+      showFeedback('info', `已移除 ${area}${seat}，当前已选${currentSeats.length}个座位`)
+    } else {
+      showFeedback('info', '已清空多人选座，请重新点选')
+    }
+    return
+  }
+
+  currentSeats.push({
+    tableArea: area,
+    seatNo: seat
+  })
+  pendingMultiSeatSelection.value = { seats: currentSeats }
+
+  const selectedCount = currentSeats.length
+  const preset = selectedCount >= 2
+    ? resolveMultiPersonPackagePresetByPeopleCount(selectedCount)
+    : null
+
+  if (selectedCount === 1) {
+    showFeedback('info', `已选第一座位 ${area}${seat}，继续左键追加座位`)
+    return
+  }
+
+  if (preset) {
+    showFeedback('info', `已选${selectedCount}个座位，可直接确认进入${preset.peopleCount}人套餐`)
+    return
+  }
+
+  showFeedback('error', `已选${selectedCount}个座位，但当前未配置对应多人套餐`)
+}
+
+async function confirmPendingMultiSeatSelection() {
+  const currentSeats = Array.isArray(pendingMultiSeatSelection.value?.seats)
+    ? [...pendingMultiSeatSelection.value.seats]
+    : []
+
+  if (currentSeats.length < 2) {
+    showFeedback('error', '多人套餐至少需要选择2个座位')
+    return
+  }
+
+  const preset = pendingMultiSeatPreset.value || resolveMultiPersonPackagePresetByPeopleCount(currentSeats.length)
+  if (!preset) {
+    pendingMultiSeatSelection.value = {
+      seats: currentSeats
+    }
+    showFeedback('error', `当前未配置${currentSeats.length}人套餐，请在计费规则中新增并启用`)
     return
   }
 
   await openAddModal()
-  const firstArea = first.tableArea
-  const firstSeat = first.seatNo
-  const secondArea = area
-  const secondSeat = seat
-  const preset = resolveDoublePackagePreset()
+  const firstSeat = currentSeats[0]
+  const extraSeats = currentSeats.slice(1).map((item) => ({
+    tableArea: item.tableArea,
+    tableSeat: item.seatNo,
+    tableNo: buildTableNo(item.tableArea, item.seatNo)
+  }))
+  const firstExtraSeat = extraSeats[0] || {
+    tableArea: firstSeat.tableArea,
+    tableSeat: '',
+    tableNo: ''
+  }
 
-  addForm.tableArea = firstArea
-  addForm.tableSeat = firstSeat
-  addForm.tableNo = buildTableNo(firstArea, firstSeat)
-  addForm.secondTableArea = secondArea
-  addForm.secondTableSeat = secondSeat
-  addForm.secondTableNo = buildTableNo(secondArea, secondSeat)
+  addForm.tableArea = firstSeat.tableArea
+  addForm.tableSeat = firstSeat.seatNo
+  addForm.tableNo = buildTableNo(firstSeat.tableArea, firstSeat.seatNo)
+  addForm.extraTableSelections = extraSeats
+  addForm.extraTableNos = extraSeats.map((item) => item.tableNo).filter(Boolean)
+  addForm.secondTableArea = firstExtraSeat.tableArea
+  addForm.secondTableSeat = firstExtraSeat.tableSeat
+  addForm.secondTableNo = firstExtraSeat.tableNo
   addForm.timerType = preset.timerType
   addForm.packagePlan = preset.packagePlan
-  clearPendingDoubleSeatStart()
+  deactivateMultiSeatSelectionMode()
+  showFeedback('success', `已预填${preset.peopleCount}人套餐座位，请选择客户后开始计时`)
 }
 
 function closeAddModal(force = false) {
@@ -1516,7 +1746,7 @@ function closeAddModal(force = false) {
   addErrors.value = {}
   addCurrentBalance.value = null
   addBalanceLoading.value = false
-  clearPendingDoubleSeatStart()
+  deactivateMultiSeatSelectionMode()
   restoreRoomAfterAddModal.value = ''
 }
 
@@ -1546,11 +1776,23 @@ function closeSettleModal() {
 }
 
 function validateAddForm() {
-  const { isValid, errors } = validateSharedTimerConsumeForm(addForm, addTimerCustomerOptions.value)
-  const tableNo = normalizeTableNo(buildTableNo(addForm.tableArea, addForm.tableSeat) || addForm.tableNo)
-  const secondTableNo = normalizeTableNo(buildTableNo(addForm.secondTableArea, addForm.secondTableSeat) || addForm.secondTableNo)
+  const seatPayload = getTimerConsumeSeatPayload(addForm, billingRules.value)
+  const firstExtraSeat = seatPayload.extraTableSelections[0] || {
+    tableArea: seatPayload.tableArea,
+    tableSeat: '',
+    tableNo: ''
+  }
+  addForm.tableArea = seatPayload.tableArea
+  addForm.tableSeat = seatPayload.tableSeat
+  addForm.extraTableSelections = seatPayload.extraTableSelections
+  addForm.extraTableNos = seatPayload.extraTableNos
+  addForm.secondTableArea = firstExtraSeat.tableArea
+  addForm.secondTableSeat = firstExtraSeat.tableSeat
+  addForm.secondTableNo = firstExtraSeat.tableNo
+
+  const { isValid, errors } = validateSharedTimerConsumeForm(addForm, addTimerCustomerOptions.value, billingRules.value)
+  const tableNo = normalizeTableNo(seatPayload.tableNo)
   addForm.tableNo = tableNo
-  addForm.secondTableNo = secondTableNo
 
   if (tableNo && !isValidTableNo(tableNo)) {
     errors.tableNo = '桌号必须在 A-H/J-N/P-Z 桌、1-20号范围内'
@@ -1558,15 +1800,28 @@ function validateAddForm() {
     errors.tableNo = `桌号已占用：${tableNo}`
   }
 
-  if (isDoublePackagePlan(addForm.packagePlan)) {
-    if (!secondTableNo) {
-      errors.secondTableNo = '双人套餐请选择第二个座位'
-    } else if (!isValidTableNo(secondTableNo)) {
-      errors.secondTableNo = '第二座位格式不正确'
-    } else if (secondTableNo === tableNo) {
-      errors.secondTableNo = '第二座位不能与第一座位相同'
-    } else if (isTableNoOccupied(secondTableNo)) {
-      errors.secondTableNo = `第二座位已占用：${secondTableNo}`
+  const normalizedExtraTableNos = []
+  seatPayload.extraTableSelections.forEach((selection, index) => {
+    const tableNoAtIndex = normalizeTableNo(selection?.tableNo || buildTableNo(selection?.tableArea, selection?.tableSeat))
+    if (!tableNoAtIndex || !isValidTableNo(tableNoAtIndex) || tableNoAtIndex === tableNo) return
+    if (isTableNoOccupied(tableNoAtIndex)) {
+      errors[`extraTableNos.${index}`] = `第${index + 2}座位已占用：${tableNoAtIndex}`
+      return
+    }
+    normalizedExtraTableNos.push(tableNoAtIndex)
+  })
+
+  addForm.extraTableNos = normalizedExtraTableNos
+  addForm.secondTableNo = normalizedExtraTableNos[0] || ''
+  if (errors['extraTableNos.0']) {
+    errors.secondTableNo = errors['extraTableNos.0']
+  }
+  if (!errors.extraTableNos) {
+    const firstExtraError = Object.keys(errors)
+      .filter((key) => key.startsWith('extraTableNos.'))
+      .sort()[0]
+    if (firstExtraError) {
+      errors.extraTableNos = errors[firstExtraError]
     }
   }
 
@@ -1581,10 +1836,21 @@ function validateAddForm() {
 
 function validateEditForm() {
   const errors = {}
-  const tableNo = normalizeTableNo(buildTableNo(editForm.tableArea, editForm.tableSeat) || editForm.tableNo)
-  const secondTableNo = normalizeTableNo(buildTableNo(editForm.secondTableArea, editForm.secondTableSeat) || editForm.secondTableNo)
+  const seatPayload = getTimerConsumeSeatPayload(editForm, billingRules.value)
+  const tableNo = normalizeTableNo(seatPayload.tableNo)
+  const firstExtraSeat = seatPayload.extraTableSelections[0] || {
+    tableArea: seatPayload.tableArea,
+    tableSeat: '',
+    tableNo: ''
+  }
+  editForm.tableArea = seatPayload.tableArea
+  editForm.tableSeat = seatPayload.tableSeat
   editForm.tableNo = tableNo
-  editForm.secondTableNo = secondTableNo
+  editForm.extraTableSelections = seatPayload.extraTableSelections
+  editForm.extraTableNos = seatPayload.extraTableNos
+  editForm.secondTableArea = firstExtraSeat.tableArea
+  editForm.secondTableSeat = firstExtraSeat.tableSeat
+  editForm.secondTableNo = firstExtraSeat.tableNo
 
   if (!editForm.packagePlan) {
     errors.packagePlan = '请选择初始套餐'
@@ -1597,15 +1863,45 @@ function validateEditForm() {
     errors.tableNo = `桌号已占用：${tableNo}`
   }
 
-  if (isDoublePackagePlan(editForm.packagePlan)) {
-    if (!secondTableNo) {
-      errors.secondTableNo = '双人套餐请选择第二个座位'
-    } else if (!isValidTableNo(secondTableNo)) {
-      errors.secondTableNo = '第二座位格式不正确'
-    } else if (secondTableNo === tableNo) {
-      errors.secondTableNo = '第二座位不能与第一座位相同'
-    } else if (isTableNoOccupied(secondTableNo, editingTimer.value?.id)) {
-      errors.secondTableNo = `第二座位已占用：${secondTableNo}`
+  const seenSeats = new Set(tableNo ? [tableNo] : [])
+  const normalizedExtraTableNos = []
+  seatPayload.extraTableSelections.forEach((selection, index) => {
+    const seatLabel = `第${index + 2}座位`
+    const tableNoAtIndex = normalizeTableNo(selection?.tableNo || buildTableNo(selection?.tableArea, selection?.tableSeat))
+    const key = `extraTableNos.${index}`
+
+    if (!tableNoAtIndex) {
+      errors[key] = `${seatLabel}不能为空`
+      return
+    }
+    if (!isValidTableNo(tableNoAtIndex)) {
+      errors[key] = `${seatLabel}格式不正确`
+      return
+    }
+    if (seenSeats.has(tableNoAtIndex)) {
+      errors[key] = `${seatLabel}不能与已选座位重复`
+      return
+    }
+    if (isTableNoOccupied(tableNoAtIndex, editingTimer.value?.id)) {
+      errors[key] = `${seatLabel}已占用：${tableNoAtIndex}`
+      return
+    }
+
+    seenSeats.add(tableNoAtIndex)
+    normalizedExtraTableNos.push(tableNoAtIndex)
+  })
+
+  editForm.extraTableNos = normalizedExtraTableNos
+  editForm.secondTableNo = normalizedExtraTableNos[0] || ''
+  if (errors['extraTableNos.0']) {
+    errors.secondTableNo = errors['extraTableNos.0']
+  }
+  if (!errors.extraTableNos) {
+    const firstExtraError = Object.keys(errors)
+      .filter((key) => key.startsWith('extraTableNos.'))
+      .sort()[0]
+    if (firstExtraError) {
+      errors.extraTableNos = errors[firstExtraError]
     }
   }
 
@@ -1628,7 +1924,9 @@ function validateEditForm() {
 
   return {
     tableNo,
-    secondTableNo: isDoublePackagePlan(editForm.packagePlan) ? secondTableNo : '',
+    extraTableSelections: seatPayload.extraTableSelections,
+    extraTableNos: normalizedExtraTableNos,
+    secondTableNo: normalizedExtraTableNos[0] || '',
     packagePlan: editForm.packagePlan,
     notes: String(editForm.notes || '').trim(),
     largeImages,
@@ -1639,10 +1937,8 @@ function validateEditForm() {
 }
 
 function resolveTimerTypeByPackagePlan(packagePlan, fallback = 'limited') {
-  const plan = String(packagePlan || '')
-  if (plan.startsWith('weekday')) return 'weekday'
-  if (plan.startsWith('weekend')) return 'weekend'
-  if (plan.startsWith('limited')) return 'limited'
+  const info = resolvePackagePlanInfo(packagePlan, billingRules.value)
+  if (info?.timerType) return info.timerType
   return fallback
 }
 
@@ -1682,7 +1978,7 @@ async function startTimer() {
 
   submitting.value = true
   try {
-    await api.post('/active-timers', buildTimerConsumeRequestPayload(addForm))
+    await api.post('/active-timers', buildTimerConsumeRequestPayload(addForm, billingRules.value))
     closeAddModal(true)
     await fetchTimers()
     showFeedback('success', '计时已开始。')
@@ -1708,6 +2004,7 @@ async function saveTimerMaterials() {
         ...editingTimer.value,
         notes: materials.notes,
         packagePlan: materials.packagePlan,
+        extraTableNos: materials.extraTableNos,
         secondTableNo: materials.secondTableNo
       },
       materials,
@@ -1881,6 +2178,14 @@ watch(
 )
 
 watch(
+  [() => showEditModal.value, () => editForm.packagePlan, () => editForm.tableArea],
+  ([visible]) => {
+    if (!visible) return
+    syncEditSeatPayload()
+  }
+)
+
+watch(
   [
     () => showSettleModal.value,
     () => selectedTimer.value?.id,
@@ -1906,6 +2211,14 @@ watch(
 function handleGlobalKeydown(event) {
   if (event.key !== 'Escape') return
   if (submitting.value) return
+
+  const roomModalVisible = showLivingRoomModal.value || showSmallRoomModal.value || showGardenModal.value || showUpstairsModal.value
+  if (roomModalVisible && pendingMultiSeatSelection.value) {
+    event.preventDefault()
+    clearPendingMultiSeatSelection()
+    showFeedback('info', '已取消多人选座')
+    return
+  }
 
   if (showLivingRoomModal.value) {
     event.preventDefault()
@@ -2093,7 +2406,7 @@ onUnmounted(() => {
           <div class="flex items-center justify-between">
             <div>
               <p class="text-base font-bold text-slate-900">客厅座位分布</p>
-              <p class="text-xs text-slate-600 mt-1">点击查看客厅座位图（右键选第一座位，左键选第二座位）</p>
+              <p class="text-xs text-slate-600 mt-1">点击查看客厅座位图（单座位左键开台，多人模式左键点选后确认）</p>
             </div>
             <div class="text-right">
               <p class="text-xs text-slate-500">总座位 {{ livingRoomSeatSummary.total }}</p>
@@ -2110,7 +2423,7 @@ onUnmounted(() => {
           <div class="flex items-center justify-between">
             <div>
               <p class="text-base font-bold text-slate-900">小房间座位分布</p>
-              <p class="text-xs text-slate-600 mt-1">点击查看小房间座位图（右键选第一座位，左键选第二座位）</p>
+              <p class="text-xs text-slate-600 mt-1">点击查看小房间座位图（单座位左键开台，多人模式左键点选后确认）</p>
             </div>
             <div class="text-right">
               <p class="text-xs text-slate-500">总座位 {{ smallRoomSeatSummary.total }}</p>
@@ -2127,7 +2440,7 @@ onUnmounted(() => {
           <div class="flex items-center justify-between">
             <div>
               <p class="text-base font-bold text-slate-900">花园座位分布</p>
-              <p class="text-xs text-slate-600 mt-1">点击查看花园座位图（右键选第一座位，左键选第二座位）</p>
+              <p class="text-xs text-slate-600 mt-1">点击查看花园座位图（单座位左键开台，多人模式左键点选后确认）</p>
             </div>
             <div class="text-right">
               <p class="text-xs text-slate-500">总座位 {{ gardenSeatSummary.total }}</p>
@@ -2144,7 +2457,7 @@ onUnmounted(() => {
           <div class="flex items-center justify-between">
             <div>
               <p class="text-base font-bold text-slate-900">楼上座位分布</p>
-              <p class="text-xs text-slate-600 mt-1">点击查看楼上座位图（右键选第一座位，左键选第二座位）</p>
+              <p class="text-xs text-slate-600 mt-1">点击查看楼上座位图（单座位左键开台，多人模式左键点选后确认）</p>
             </div>
             <div class="text-right">
               <p class="text-xs text-slate-500">总座位 {{ upstairsSeatSummary.total }}</p>
@@ -2180,12 +2493,67 @@ onUnmounted(() => {
               <div class="text-xs text-slate-600">座位：红=有人，白=空位</div>
               <div class="text-xs text-slate-500">剩余 {{ livingRoomSeatSummary.available }} / 占用 {{ livingRoomSeatSummary.occupied }}</div>
             </div>
-            <p class="mb-3 text-xs text-slate-600">
-              右键选第一座位，左键选第二座位可快速创建双人套餐；直接左键可创建单座位计时。
-            </p>
-            <p v-if="pendingDoubleSeatStart" class="mb-3 text-xs text-blue-800 font-semibold">
-              已选第一座位：{{ pendingDoubleSeatStart.tableArea }}{{ pendingDoubleSeatStart.seatNo }}（等待左键选择第二座位）
-            </p>
+            <div class="mb-3 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                @click="deactivateMultiSeatSelectionMode()"
+                :class="[
+                  'rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors',
+                  seatSelectionMode === 'single'
+                    ? 'bg-slate-900 text-white'
+                    : 'border border-slate-300 text-slate-700 hover:bg-slate-50'
+                ]"
+              >
+                单座位开台
+              </button>
+              <button
+                type="button"
+                @click="activateMultiSeatSelectionMode"
+                :class="[
+                  'rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors',
+                  seatSelectionMode === 'multi'
+                    ? 'bg-blue-600 text-white'
+                    : 'border border-blue-300 text-blue-700 hover:bg-blue-50'
+                ]"
+              >
+                多人选座
+              </button>
+              <p class="text-xs text-slate-600 sm:ml-2">单座位直接左键开台；多人模式下左键点选或取消，选好后确认。</p>
+            </div>
+            <div v-if="seatSelectionMode === 'multi'" class="mb-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+              <p v-if="pendingMultiSeatCount > 0">已选座位：{{ getPendingSeatDisplayText() }}</p>
+              <p v-else>请左键依次点选多人座位，再次点击已选座位可取消。</p>
+              <p v-if="pendingMultiSeatCount >= 2 && pendingMultiSeatPreset" class="mt-1">
+                将匹配 {{ pendingMultiSeatPreset.peopleCount }}人套餐，确认后自动预填。
+              </p>
+              <p v-else-if="pendingMultiSeatCount >= 2" class="mt-1 text-amber-700">
+                当前已选 {{ pendingMultiSeatCount }} 个座位，但未配置对应套餐。
+              </p>
+              <div class="mt-2 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  @click="confirmPendingMultiSeatSelection"
+                  :disabled="pendingMultiSeatCount < 2 || !pendingMultiSeatPreset"
+                  class="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+                >
+                  确认多人选座
+                </button>
+                <button
+                  type="button"
+                  class="rounded-lg border border-blue-200 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+                  @click="clearPendingMultiSeatSelection"
+                >
+                  清空已选
+                </button>
+                <button
+                  type="button"
+                  class="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                  @click="deactivateMultiSeatSelectionMode(true)"
+                >
+                  退出多人模式
+                </button>
+              </div>
+            </div>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <article
                 v-for="table in seatLayoutTables"
@@ -2216,10 +2584,9 @@ onUnmounted(() => {
                       :key="`${table.area}-${seat.seatNo}`"
                       type="button"
                       @click="handleSeatLeftClick(table.area, seat.seatNo, seat.occupied)"
-                      @contextmenu.prevent="handleSeatRightClick(table.area, seat.seatNo, seat.occupied)"
                       :class="[
                         'relative h-10 rounded-lg border flex items-center justify-center text-[12px] font-bold transition-colors',
-                        pendingDoubleSeatStart && pendingDoubleSeatStart.tableArea === table.area && pendingDoubleSeatStart.seatNo === seat.seatNo
+                        isPendingSeatSelected(table.area, seat.seatNo)
                           ? 'ring-2 ring-blue-600 ring-offset-2 ring-offset-slate-200'
                           : '',
                         seat.occupied
@@ -2273,12 +2640,67 @@ onUnmounted(() => {
               <div class="text-xs text-slate-600">座位：红=有人，白=空位</div>
               <div class="text-xs text-slate-500">剩余 {{ smallRoomSeatSummary.available }} / 占用 {{ smallRoomSeatSummary.occupied }}</div>
             </div>
-            <p class="mb-3 text-xs text-slate-600">
-              右键选第一座位，左键选第二座位可快速创建双人套餐；直接左键可创建单座位计时。
-            </p>
-            <p v-if="pendingDoubleSeatStart" class="mb-3 text-xs text-blue-800 font-semibold">
-              已选第一座位：{{ pendingDoubleSeatStart.tableArea }}{{ pendingDoubleSeatStart.seatNo }}（等待左键选择第二座位）
-            </p>
+            <div class="mb-3 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                @click="deactivateMultiSeatSelectionMode()"
+                :class="[
+                  'rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors',
+                  seatSelectionMode === 'single'
+                    ? 'bg-slate-900 text-white'
+                    : 'border border-slate-300 text-slate-700 hover:bg-slate-50'
+                ]"
+              >
+                单座位开台
+              </button>
+              <button
+                type="button"
+                @click="activateMultiSeatSelectionMode"
+                :class="[
+                  'rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors',
+                  seatSelectionMode === 'multi'
+                    ? 'bg-blue-600 text-white'
+                    : 'border border-blue-300 text-blue-700 hover:bg-blue-50'
+                ]"
+              >
+                多人选座
+              </button>
+              <p class="text-xs text-slate-600 sm:ml-2">单座位直接左键开台；多人模式下左键点选或取消，选好后确认。</p>
+            </div>
+            <div v-if="seatSelectionMode === 'multi'" class="mb-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+              <p v-if="pendingMultiSeatCount > 0">已选座位：{{ getPendingSeatDisplayText() }}</p>
+              <p v-else>请左键依次点选多人座位，再次点击已选座位可取消。</p>
+              <p v-if="pendingMultiSeatCount >= 2 && pendingMultiSeatPreset" class="mt-1">
+                将匹配 {{ pendingMultiSeatPreset.peopleCount }}人套餐，确认后自动预填。
+              </p>
+              <p v-else-if="pendingMultiSeatCount >= 2" class="mt-1 text-amber-700">
+                当前已选 {{ pendingMultiSeatCount }} 个座位，但未配置对应套餐。
+              </p>
+              <div class="mt-2 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  @click="confirmPendingMultiSeatSelection"
+                  :disabled="pendingMultiSeatCount < 2 || !pendingMultiSeatPreset"
+                  class="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+                >
+                  确认多人选座
+                </button>
+                <button
+                  type="button"
+                  class="rounded-lg border border-blue-200 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+                  @click="clearPendingMultiSeatSelection"
+                >
+                  清空已选
+                </button>
+                <button
+                  type="button"
+                  class="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                  @click="deactivateMultiSeatSelectionMode(true)"
+                >
+                  退出多人模式
+                </button>
+              </div>
+            </div>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <article
                 v-for="table in smallRoomSeatLayoutTables"
@@ -2309,10 +2731,9 @@ onUnmounted(() => {
                       :key="`small-${table.area}-${seat.seatNo}`"
                       type="button"
                       @click="handleSeatLeftClick(table.area, seat.seatNo, seat.occupied)"
-                      @contextmenu.prevent="handleSeatRightClick(table.area, seat.seatNo, seat.occupied)"
                       :class="[
                         'relative h-10 rounded-lg border flex items-center justify-center text-[12px] font-bold transition-colors',
-                        pendingDoubleSeatStart && pendingDoubleSeatStart.tableArea === table.area && pendingDoubleSeatStart.seatNo === seat.seatNo
+                        isPendingSeatSelected(table.area, seat.seatNo)
                           ? 'ring-2 ring-blue-600 ring-offset-2 ring-offset-slate-200'
                           : '',
                         seat.occupied
@@ -2366,12 +2787,67 @@ onUnmounted(() => {
               <div class="text-xs text-slate-600">座位：红=有人，白=空位</div>
               <div class="text-xs text-slate-500">剩余 {{ gardenSeatSummary.available }} / 占用 {{ gardenSeatSummary.occupied }}</div>
             </div>
-            <p class="mb-3 text-xs text-slate-600">
-              右键选第一座位，左键选第二座位可快速创建双人套餐；直接左键可创建单座位计时。
-            </p>
-            <p v-if="pendingDoubleSeatStart" class="mb-3 text-xs text-blue-800 font-semibold">
-              已选第一座位：{{ pendingDoubleSeatStart.tableArea }}{{ pendingDoubleSeatStart.seatNo }}（等待左键选择第二座位）
-            </p>
+            <div class="mb-3 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                @click="deactivateMultiSeatSelectionMode()"
+                :class="[
+                  'rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors',
+                  seatSelectionMode === 'single'
+                    ? 'bg-slate-900 text-white'
+                    : 'border border-slate-300 text-slate-700 hover:bg-slate-50'
+                ]"
+              >
+                单座位开台
+              </button>
+              <button
+                type="button"
+                @click="activateMultiSeatSelectionMode"
+                :class="[
+                  'rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors',
+                  seatSelectionMode === 'multi'
+                    ? 'bg-blue-600 text-white'
+                    : 'border border-blue-300 text-blue-700 hover:bg-blue-50'
+                ]"
+              >
+                多人选座
+              </button>
+              <p class="text-xs text-slate-600 sm:ml-2">单座位直接左键开台；多人模式下左键点选或取消，选好后确认。</p>
+            </div>
+            <div v-if="seatSelectionMode === 'multi'" class="mb-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+              <p v-if="pendingMultiSeatCount > 0">已选座位：{{ getPendingSeatDisplayText() }}</p>
+              <p v-else>请左键依次点选多人座位，再次点击已选座位可取消。</p>
+              <p v-if="pendingMultiSeatCount >= 2 && pendingMultiSeatPreset" class="mt-1">
+                将匹配 {{ pendingMultiSeatPreset.peopleCount }}人套餐，确认后自动预填。
+              </p>
+              <p v-else-if="pendingMultiSeatCount >= 2" class="mt-1 text-amber-700">
+                当前已选 {{ pendingMultiSeatCount }} 个座位，但未配置对应套餐。
+              </p>
+              <div class="mt-2 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  @click="confirmPendingMultiSeatSelection"
+                  :disabled="pendingMultiSeatCount < 2 || !pendingMultiSeatPreset"
+                  class="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+                >
+                  确认多人选座
+                </button>
+                <button
+                  type="button"
+                  class="rounded-lg border border-blue-200 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+                  @click="clearPendingMultiSeatSelection"
+                >
+                  清空已选
+                </button>
+                <button
+                  type="button"
+                  class="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                  @click="deactivateMultiSeatSelectionMode(true)"
+                >
+                  退出多人模式
+                </button>
+              </div>
+            </div>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <article
                 v-for="table in gardenSeatLayoutTables"
@@ -2412,12 +2888,11 @@ onUnmounted(() => {
                       :key="`garden-${table.area}-${seat.seatNo}`"
                       type="button"
                       @click="handleSeatLeftClick(table.area, seat.seatNo, seat.occupied)"
-                      @contextmenu.prevent="handleSeatRightClick(table.area, seat.seatNo, seat.occupied)"
                       :class="[
                         'relative rounded-lg border flex items-center justify-center text-[12px] font-bold transition-colors',
                         isGardenKTable(table.area) ? 'h-10 w-10' : 'h-10',
                         getGardenSeatGridPositionClass(table.area, seat.seatNo),
-                        pendingDoubleSeatStart && pendingDoubleSeatStart.tableArea === table.area && pendingDoubleSeatStart.seatNo === seat.seatNo
+                        isPendingSeatSelected(table.area, seat.seatNo)
                           ? 'ring-2 ring-blue-600 ring-offset-2 ring-offset-slate-200'
                           : '',
                         seat.occupied
@@ -2471,12 +2946,67 @@ onUnmounted(() => {
               <div class="text-xs text-slate-600">座位：红=有人，白=空位</div>
               <div class="text-xs text-slate-500">剩余 {{ upstairsSeatSummary.available }} / 占用 {{ upstairsSeatSummary.occupied }}</div>
             </div>
-            <p class="mb-3 text-xs text-slate-600">
-              右键选第一座位，左键选第二座位可快速创建双人套餐；直接左键可创建单座位计时。
-            </p>
-            <p v-if="pendingDoubleSeatStart" class="mb-3 text-xs text-blue-800 font-semibold">
-              已选第一座位：{{ pendingDoubleSeatStart.tableArea }}{{ pendingDoubleSeatStart.seatNo }}（等待左键选择第二座位）
-            </p>
+            <div class="mb-3 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                @click="deactivateMultiSeatSelectionMode()"
+                :class="[
+                  'rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors',
+                  seatSelectionMode === 'single'
+                    ? 'bg-slate-900 text-white'
+                    : 'border border-slate-300 text-slate-700 hover:bg-slate-50'
+                ]"
+              >
+                单座位开台
+              </button>
+              <button
+                type="button"
+                @click="activateMultiSeatSelectionMode"
+                :class="[
+                  'rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors',
+                  seatSelectionMode === 'multi'
+                    ? 'bg-blue-600 text-white'
+                    : 'border border-blue-300 text-blue-700 hover:bg-blue-50'
+                ]"
+              >
+                多人选座
+              </button>
+              <p class="text-xs text-slate-600 sm:ml-2">单座位直接左键开台；多人模式下左键点选或取消，选好后确认。</p>
+            </div>
+            <div v-if="seatSelectionMode === 'multi'" class="mb-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+              <p v-if="pendingMultiSeatCount > 0">已选座位：{{ getPendingSeatDisplayText() }}</p>
+              <p v-else>请左键依次点选多人座位，再次点击已选座位可取消。</p>
+              <p v-if="pendingMultiSeatCount >= 2 && pendingMultiSeatPreset" class="mt-1">
+                将匹配 {{ pendingMultiSeatPreset.peopleCount }}人套餐，确认后自动预填。
+              </p>
+              <p v-else-if="pendingMultiSeatCount >= 2" class="mt-1 text-amber-700">
+                当前已选 {{ pendingMultiSeatCount }} 个座位，但未配置对应套餐。
+              </p>
+              <div class="mt-2 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  @click="confirmPendingMultiSeatSelection"
+                  :disabled="pendingMultiSeatCount < 2 || !pendingMultiSeatPreset"
+                  class="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+                >
+                  确认多人选座
+                </button>
+                <button
+                  type="button"
+                  class="rounded-lg border border-blue-200 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+                  @click="clearPendingMultiSeatSelection"
+                >
+                  清空已选
+                </button>
+                <button
+                  type="button"
+                  class="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                  @click="deactivateMultiSeatSelectionMode(true)"
+                >
+                  退出多人模式
+                </button>
+              </div>
+            </div>
             <div class="grid grid-cols-1 gap-4">
               <article
                 v-for="table in upstairsSeatLayoutTables"
@@ -2506,11 +3036,10 @@ onUnmounted(() => {
                       :key="`upstairs-${table.area}-${seat.seatNo}`"
                       type="button"
                       @click="handleSeatLeftClick(table.area, seat.seatNo, seat.occupied)"
-                      @contextmenu.prevent="handleSeatRightClick(table.area, seat.seatNo, seat.occupied)"
                       :class="[
                         'relative h-12 w-12 rounded-lg border flex items-center justify-center text-sm font-bold transition-colors',
                         getUpstairsSeatGridPositionClass(seat.seatNo),
-                        pendingDoubleSeatStart && pendingDoubleSeatStart.tableArea === table.area && pendingDoubleSeatStart.seatNo === seat.seatNo
+                        isPendingSeatSelected(table.area, seat.seatNo)
                           ? 'ring-2 ring-blue-600 ring-offset-2 ring-offset-slate-200'
                           : '',
                         seat.occupied
@@ -2666,6 +3195,7 @@ onUnmounted(() => {
               :errors="addErrors"
               :customer-options="addTimerCustomerOptions"
               :enabled-misc-items="enabledMiscItems"
+              :billing-rules="billingRules"
               @update:model-value="applyAddForm"
             />
           </div>
@@ -2695,7 +3225,7 @@ onUnmounted(() => {
 
           <div class="p-6 space-y-4">
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">桌号</label>
+              <label class="block text-sm font-medium text-gray-700 mb-1">第1座位</label>
               <div class="grid grid-cols-2 gap-3">
                 <select
                   v-model="editForm.tableArea"
@@ -2723,33 +3253,49 @@ onUnmounted(() => {
               <p v-if="editErrors.tableNo" class="text-red-500 text-xs mt-1">{{ editErrors.tableNo }}</p>
             </div>
 
-            <div v-if="isDoublePackagePlan(editForm.packagePlan)">
-              <label class="block text-sm font-medium text-gray-700 mb-1">第二座位（双人套餐）</label>
-              <div class="grid grid-cols-2 gap-3">
-                <select
-                  v-model="editForm.secondTableArea"
-                  :class="[
-                    'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-                    editErrors.secondTableNo ? 'border-red-500' : 'border-gray-300'
-                  ]"
-                >
-                  <option v-for="area in tableAreaOptions" :key="`edit-second-area-${area}`" :value="area">
-                    {{ area }}桌
-                  </option>
-                </select>
-                <select
-                  v-model="editForm.secondTableSeat"
-                  :class="[
-                    'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-                    editErrors.secondTableNo ? 'border-red-500' : 'border-gray-300'
-                  ]"
-                >
-                  <option v-for="seat in tableSeatOptions" :key="`edit-second-seat-${seat}`" :value="seat">
-                    {{ seat }}号
-                  </option>
-                </select>
+            <div
+              v-if="getRequiredExtraSeatCount(editForm.packagePlan, billingRules.value) > 0"
+              class="space-y-3"
+            >
+              <p class="text-xs text-slate-600">
+                当前套餐需选择 {{ getRequiredExtraSeatCount(editForm.packagePlan, billingRules.value) }} 个附加座位。
+              </p>
+              <div v-for="(seat, index) in editForm.extraTableSelections" :key="`edit-extra-seat-${index}`">
+                <label class="block text-sm font-medium text-gray-700 mb-1">
+                  第{{ index + 2 }}座位
+                </label>
+                <div class="grid grid-cols-2 gap-3">
+                  <select
+                    :value="seat.tableArea || editForm.tableArea"
+                    :class="[
+                      'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
+                      getEditExtraSeatError(index) ? 'border-red-500' : 'border-gray-300'
+                    ]"
+                    @change="updateEditExtraSeatArea(index, $event.target.value)"
+                  >
+                    <option v-for="area in tableAreaOptions" :key="`edit-extra-area-${index}-${area}`" :value="area">
+                      {{ area }}桌
+                    </option>
+                  </select>
+                  <select
+                    :value="seat.tableSeat"
+                    :class="[
+                      'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
+                      getEditExtraSeatError(index) ? 'border-red-500' : 'border-gray-300'
+                    ]"
+                    @change="updateEditExtraSeatSeat(index, $event.target.value)"
+                  >
+                    <option value="">请选择号位</option>
+                    <option v-for="seatNo in tableSeatOptions" :key="`edit-extra-seat-${index}-${seatNo}`" :value="seatNo">
+                      {{ seatNo }}号
+                    </option>
+                  </select>
+                </div>
+                <p v-if="getEditExtraSeatError(index)" class="text-red-500 text-xs mt-1">
+                  {{ getEditExtraSeatError(index) }}
+                </p>
               </div>
-              <p v-if="editErrors.secondTableNo" class="text-red-500 text-xs mt-1">{{ editErrors.secondTableNo }}</p>
+              <p v-if="editErrors.extraTableNos" class="text-red-500 text-xs mt-1">{{ editErrors.extraTableNos }}</p>
             </div>
 
             <div>
