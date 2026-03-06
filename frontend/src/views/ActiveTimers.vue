@@ -342,9 +342,29 @@ const settleOvertimeRatePerMinute = computed(() => {
   return configuredRate
 })
 
+const settleOvertimePeopleCount = computed(() => {
+  if (!selectedTimer.value) return 1
+  const packagePeopleCount = getPackagePlanPeopleCount(selectedTimer.value.packagePlan || '', billingRules.value)
+  const occupiedSeatCount = getTimerOccupiedTableNos(selectedTimer.value).length
+  const resolvedPeopleCount = Math.max(
+    1,
+    Math.floor(Number(packagePeopleCount) || 0),
+    Math.floor(Number(occupiedSeatCount) || 0)
+  )
+  return resolvedPeopleCount >= 2 ? resolvedPeopleCount : 1
+})
+
+const settleOvertimeTotalRatePerMinute = computed(() =>
+  round2(settleOvertimeRatePerMinute.value * settleOvertimePeopleCount.value)
+)
+
+const settleOvertimeFeeByRule = computed(() =>
+  round2(settleOvertimeMinutes.value * settleOvertimeTotalRatePerMinute.value)
+)
+
 const settleOvertimeFee = computed(() => {
   if (!settleForm.applyOvertimeFee) return 0
-  return round2(settleOvertimeMinutes.value * settleOvertimeRatePerMinute.value)
+  return settleOvertimeFeeByRule.value
 })
 
 const settleTotalAdditionalFee = computed(() => round2(settleRawAdditionalFee.value + settleOvertimeFee.value))
@@ -2114,11 +2134,11 @@ async function submitSettlement() {
     if (settleOvertimeMinutes.value > 0) {
       if (settleForm.applyOvertimeFee) {
         settleNotesParts.push(
-          `加班费用￥${formatAmount(settleOvertimeFee.value)}（${settleOvertimeMinutes.value}分钟，￥${formatAmount(settleOvertimeRatePerMinute.value)}/分钟）`
+          `加班费用￥${formatAmount(settleOvertimeFee.value)}（${settleOvertimeMinutes.value}分钟，${settleOvertimePeopleCount.value}人，￥${formatAmount(settleOvertimeRatePerMinute.value)}/人/分钟）`
         )
       } else {
         settleNotesParts.push(
-          `已取消加班费用（${settleOvertimeMinutes.value}分钟，原￥${formatAmount(settleOvertimeMinutes.value * settleOvertimeRatePerMinute.value)}）`
+          `已取消加班费用（${settleOvertimeMinutes.value}分钟，${settleOvertimePeopleCount.value}人，原￥${formatAmount(settleOvertimeFeeByRule.value)}）`
         )
       }
     }
