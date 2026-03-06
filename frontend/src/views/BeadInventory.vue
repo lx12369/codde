@@ -139,6 +139,12 @@ const selectedMaterialHint = computed(() => {
   if (!selectedMaterial.value) return '未选择'
   return `${selectedMaterial.value.name}（${selectedMaterial.value.id}）`
 })
+const selectedOperationHint = computed(() => {
+  if (selectedMaterialIds.value.size > 0) {
+    return `批量已选 ${selectedMaterialIds.value.size} 项`
+  }
+  return selectedMaterialHint.value
+})
 
 const isAllSelected = computed(() => {
   if (materials.value.length === 0) return false
@@ -700,25 +706,58 @@ async function handleRestockSuggestionClick(item) {
 }
 
 async function submitInbound() {
-  if (!selectedMaterial.value) {
-    requestError.value = '请先选择豆料'
+  const quantity = Number(inboundForm.quantity)
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    requestError.value = '请输入大于 0 的入库数量'
     return
   }
+
+  const targetIds = selectedMaterialIds.value.size > 0
+    ? Array.from(selectedMaterialIds.value)
+    : (selectedMaterial.value?.id ? [selectedMaterial.value.id] : [])
+
+  if (targetIds.length === 0) {
+    requestError.value = '请先选择豆料（可勾选批量）'
+    return
+  }
+
   submittingInbound.value = true
   requestError.value = ''
   try {
-    await beadInventoryApi.createInbound({
-      material_id: selectedMaterial.value.id,
-      quantity: Number(inboundForm.quantity),
-      quantity_unit: inboundForm.quantity_unit,
-      source: inboundForm.source,
-      note: inboundForm.note
-    })
+    let successCount = 0
+    let failCount = 0
+    let lastErrorMessage = ''
+
+    for (const materialId of targetIds) {
+      try {
+        await beadInventoryApi.createInbound({
+          material_id: materialId,
+          quantity,
+          quantity_unit: inboundForm.quantity_unit,
+          source: inboundForm.source,
+          note: inboundForm.note
+        })
+        successCount += 1
+      } catch (error) {
+        failCount += 1
+        lastErrorMessage = getErrorMessage(error, '补货入库失败')
+      }
+    }
+
     inboundForm.quantity = ''
     inboundForm.source = ''
     inboundForm.note = ''
+    clearSelection()
     await refreshAll()
-    showFeedback('success', '补货入库成功。')
+
+    if (failCount === 0) {
+      showFeedback('success', targetIds.length > 1 ? `批量补货成功，共 ${successCount} 个豆料。` : '补货入库成功。')
+    } else if (successCount > 0) {
+      showFeedback('error', `批量补货完成：成功 ${successCount} 个，失败 ${failCount} 个。`)
+    } else {
+      requestError.value = lastErrorMessage || '补货入库失败'
+      showFeedback('error', requestError.value)
+    }
   } catch (error) {
     requestError.value = getErrorMessage(error, '补货入库失败')
     showFeedback('error', requestError.value)
@@ -728,26 +767,59 @@ async function submitInbound() {
 }
 
 async function submitOutbound() {
-  if (!selectedMaterial.value) {
-    requestError.value = '请先选择豆料'
+  const quantity = Number(outboundForm.quantity)
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    requestError.value = '请输入大于 0 的出库数量'
     return
   }
+
+  const targetIds = selectedMaterialIds.value.size > 0
+    ? Array.from(selectedMaterialIds.value)
+    : (selectedMaterial.value?.id ? [selectedMaterial.value.id] : [])
+
+  if (targetIds.length === 0) {
+    requestError.value = '请先选择豆料（可勾选批量）'
+    return
+  }
+
   submittingOutbound.value = true
   requestError.value = ''
   try {
-    await beadInventoryApi.createOutbound({
-      material_id: selectedMaterial.value.id,
-      quantity: Number(outboundForm.quantity),
-      quantity_unit: outboundForm.quantity_unit,
-      outbound_type: 'loss',
-      usage_type: outboundForm.source || '损耗出库',
-      note: outboundForm.note
-    })
+    let successCount = 0
+    let failCount = 0
+    let lastErrorMessage = ''
+
+    for (const materialId of targetIds) {
+      try {
+        await beadInventoryApi.createOutbound({
+          material_id: materialId,
+          quantity,
+          quantity_unit: outboundForm.quantity_unit,
+          outbound_type: 'loss',
+          usage_type: outboundForm.source || '损耗出库',
+          note: outboundForm.note
+        })
+        successCount += 1
+      } catch (error) {
+        failCount += 1
+        lastErrorMessage = getErrorMessage(error, '出库失败')
+      }
+    }
+
     outboundForm.quantity = ''
     outboundForm.source = ''
     outboundForm.note = ''
+    clearSelection()
     await refreshAll()
-    showFeedback('success', '损耗出库成功。')
+
+    if (failCount === 0) {
+      showFeedback('success', targetIds.length > 1 ? `批量出库成功，共 ${successCount} 个豆料。` : '损耗出库成功。')
+    } else if (successCount > 0) {
+      showFeedback('error', `批量出库完成：成功 ${successCount} 个，失败 ${failCount} 个。`)
+    } else {
+      requestError.value = lastErrorMessage || '出库失败'
+      showFeedback('error', requestError.value)
+    }
   } catch (error) {
     requestError.value = getErrorMessage(error, '出库失败')
     showFeedback('error', requestError.value)
@@ -1215,7 +1287,7 @@ onUnmounted(() => {
     <section class="inventory-operations-grid grid grid-cols-1 gap-4 xl:grid-cols-3">
       <article class="inventory-operation-card inventory-operation-card--inbound">
         <h3 class="text-base font-semibold text-slate-900">补货入库</h3>
-        <p class="mt-1 text-xs text-slate-500">当前豆料：{{ selectedMaterialHint }}</p>
+        <p class="mt-1 text-xs text-slate-500">当前豆料：{{ selectedOperationHint }}</p>
         <div class="mt-3 space-y-2">
           <input v-model="inboundForm.quantity" type="number" min="0" step="0.001" placeholder="数量" class="inventory-input w-full">
           <select v-model="inboundForm.quantity_unit" class="inventory-input w-full">
@@ -1233,7 +1305,7 @@ onUnmounted(() => {
 
       <article class="inventory-operation-card inventory-operation-card--outbound">
         <h3 class="text-base font-semibold text-slate-900">损耗出库</h3>
-        <p class="mt-1 text-xs text-slate-500">当前豆料：{{ selectedMaterialHint }}</p>
+        <p class="mt-1 text-xs text-slate-500">当前豆料：{{ selectedOperationHint }}</p>
         <div class="mt-3 space-y-2">
           <input v-model="outboundForm.quantity" type="number" min="0" step="0.001" placeholder="数量" class="inventory-input w-full">
           <select v-model="outboundForm.quantity_unit" class="inventory-input w-full">

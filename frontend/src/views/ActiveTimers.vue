@@ -2498,135 +2498,135 @@ onUnmounted(() => {
         <button
           type="button"
           @click="openSeatOverviewModal"
-          class="w-full min-w-[280px] shrink-0 snap-start rounded-2xl border border-slate-300 bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.18),_transparent_45%),linear-gradient(135deg,#0f172a,#1e293b_50%,#0f766e)] p-4 text-left text-white hover:shadow-lg transition md:min-w-0 h-full flex flex-col"
+          class="fresh-card fresh-card--overview w-full min-w-[280px] shrink-0 snap-start rounded-2xl p-4 text-left transition md:min-w-0 h-full flex flex-col"
         >
           <div class="flex items-start justify-between gap-3">
             <div>
-              <p class="text-base font-bold">全场座位总览</p>
-              <p class="mt-1 text-xs text-slate-200">跨房间看空位，适合多人套餐一次选齐</p>
+              <p class="text-base font-bold text-sky-900">全场座位总览</p>
+              <p class="mt-1 text-xs text-sky-700/85">跨房间看空位，适合多人套餐一次选齐</p>
             </div>
-            <span class="rounded-full bg-white/15 px-2 py-0.5 text-[11px] font-semibold text-cyan-100">Overview</span>
+            <span class="fresh-card__tag rounded-full px-2 py-0.5 text-[11px] font-semibold">Overview</span>
           </div>
           <div class="mt-4 grid grid-cols-3 gap-2 text-center mt-auto">
-            <div class="rounded-xl bg-white/10 px-2 py-2 backdrop-blur-sm">
-              <p class="text-[11px] text-slate-200">总座位</p>
-              <p class="mt-1 text-lg font-bold">{{ overallSeatSummary.total }}</p>
+            <div class="fresh-stat fresh-stat--total rounded-xl px-2 py-2">
+              <p class="text-[11px] text-slate-500">总座位</p>
+              <p class="mt-1 text-lg font-bold text-slate-900">{{ overallSeatSummary.total }}</p>
             </div>
-            <div class="rounded-xl bg-emerald-400/15 px-2 py-2 backdrop-blur-sm">
-              <p class="text-[11px] text-emerald-100">剩余</p>
-              <p class="mt-1 text-lg font-bold text-emerald-50">{{ overallSeatSummary.available }}</p>
+            <div class="fresh-stat fresh-stat--available rounded-xl px-2 py-2">
+              <p class="text-[11px] text-cyan-700">剩余</p>
+              <p class="mt-1 text-lg font-bold text-cyan-900">{{ overallSeatSummary.available }}</p>
             </div>
-            <div class="rounded-xl bg-rose-400/15 px-2 py-2 backdrop-blur-sm">
-              <p class="text-[11px] text-rose-100">占用</p>
-              <p class="mt-1 text-lg font-bold text-rose-50">{{ overallSeatSummary.occupied }}</p>
+            <div class="fresh-stat fresh-stat--occupied rounded-xl px-2 py-2">
+              <p class="text-[11px] text-pink-700">占用</p>
+              <p class="mt-1 text-lg font-bold text-pink-900">{{ overallSeatSummary.occupied }}</p>
             </div>
           </div>
         </button>
         <button
           type="button"
           @click="openLivingRoomModal"
-          class="w-full min-w-[280px] shrink-0 snap-start rounded-2xl border border-slate-300 bg-[radial-gradient(circle_at_top_left,_rgba(96,165,250,0.18),_transparent_45%),linear-gradient(135deg,#0f172a,#1d4ed8_50%,#0f766e)] p-4 text-left text-white hover:shadow-lg transition md:min-w-0 h-full flex flex-col"
+          class="fresh-card fresh-card--living w-full min-w-[280px] shrink-0 snap-start rounded-2xl p-4 text-left transition md:min-w-0 h-full flex flex-col"
         >
           <div class="flex items-start justify-between gap-3">
             <div>
-              <p class="text-base font-bold">客厅座位分布</p>
-              <p class="mt-1 text-xs text-slate-200">点击查看客厅座位图（单座位左键开台，多人模式左键点选后确认）</p>
+              <p class="text-base font-bold text-sky-900">客厅座位分布</p>
+              <p class="mt-1 text-xs text-sky-700/85">点击查看客厅座位图（单座位左键开台，多人模式左键点选后确认）</p>
             </div>
-            <span class="rounded-full bg-white/15 px-2 py-0.5 text-[11px] font-semibold text-cyan-100">Living</span>
+            <span class="fresh-card__tag rounded-full px-2 py-0.5 text-[11px] font-semibold">Living</span>
           </div>
           <div class="mt-4 grid grid-cols-3 gap-2 text-center mt-auto">
-            <div class="rounded-xl bg-white/10 px-2 py-2 backdrop-blur-sm">
-              <p class="text-[11px] text-slate-200">总座位</p>
-              <p class="mt-1 text-lg font-bold">{{ livingRoomSeatSummary.total }}</p>
+            <div class="fresh-stat fresh-stat--total rounded-xl px-2 py-2">
+              <p class="text-[11px] text-slate-500">总座位</p>
+              <p class="mt-1 text-lg font-bold text-slate-900">{{ livingRoomSeatSummary.total }}</p>
             </div>
-            <div class="rounded-xl bg-emerald-400/15 px-2 py-2 backdrop-blur-sm">
-              <p class="text-[11px] text-emerald-100">剩余</p>
-              <p class="mt-1 text-lg font-bold text-emerald-50">{{ livingRoomSeatSummary.available }}</p>
+            <div class="fresh-stat fresh-stat--available rounded-xl px-2 py-2">
+              <p class="text-[11px] text-cyan-700">剩余</p>
+              <p class="mt-1 text-lg font-bold text-cyan-900">{{ livingRoomSeatSummary.available }}</p>
             </div>
-            <div class="rounded-xl bg-rose-400/15 px-2 py-2 backdrop-blur-sm">
-              <p class="text-[11px] text-rose-100">占用</p>
-              <p class="mt-1 text-lg font-bold text-rose-50">{{ livingRoomSeatSummary.occupied }}</p>
+            <div class="fresh-stat fresh-stat--occupied rounded-xl px-2 py-2">
+              <p class="text-[11px] text-pink-700">占用</p>
+              <p class="mt-1 text-lg font-bold text-pink-900">{{ livingRoomSeatSummary.occupied }}</p>
             </div>
           </div>
         </button>
         <button
           type="button"
           @click="openSmallRoomModal"
-          class="w-full min-w-[280px] shrink-0 snap-start rounded-2xl border border-slate-300 bg-[radial-gradient(circle_at_top_left,_rgba(217,70,239,0.2),_transparent_45%),linear-gradient(135deg,#111827,#7c3aed_48%,#db2777)] p-4 text-left text-white hover:shadow-lg transition md:min-w-0 h-full flex flex-col"
+          class="fresh-card fresh-card--small w-full min-w-[280px] shrink-0 snap-start rounded-2xl p-4 text-left transition md:min-w-0 h-full flex flex-col"
         >
           <div class="flex items-start justify-between gap-3">
             <div>
-              <p class="text-base font-bold">小房间座位分布</p>
-              <p class="mt-1 text-xs text-slate-200">点击查看小房间座位图（单座位左键开台，多人模式左键点选后确认）</p>
+              <p class="text-base font-bold text-blue-900">小房间座位分布</p>
+              <p class="mt-1 text-xs text-sky-700/85">点击查看小房间座位图（单座位左键开台，多人模式左键点选后确认）</p>
             </div>
-            <span class="rounded-full bg-white/15 px-2 py-0.5 text-[11px] font-semibold text-fuchsia-100">Private</span>
+            <span class="fresh-card__tag rounded-full px-2 py-0.5 text-[11px] font-semibold">Private</span>
           </div>
           <div class="mt-4 grid grid-cols-3 gap-2 text-center mt-auto">
-            <div class="rounded-xl bg-white/10 px-2 py-2 backdrop-blur-sm">
-              <p class="text-[11px] text-slate-200">总座位</p>
-              <p class="mt-1 text-lg font-bold">{{ smallRoomSeatSummary.total }}</p>
+            <div class="fresh-stat fresh-stat--total rounded-xl px-2 py-2">
+              <p class="text-[11px] text-slate-500">总座位</p>
+              <p class="mt-1 text-lg font-bold text-slate-900">{{ smallRoomSeatSummary.total }}</p>
             </div>
-            <div class="rounded-xl bg-emerald-400/15 px-2 py-2 backdrop-blur-sm">
-              <p class="text-[11px] text-emerald-100">剩余</p>
-              <p class="mt-1 text-lg font-bold text-emerald-50">{{ smallRoomSeatSummary.available }}</p>
+            <div class="fresh-stat fresh-stat--available rounded-xl px-2 py-2">
+              <p class="text-[11px] text-cyan-700">剩余</p>
+              <p class="mt-1 text-lg font-bold text-cyan-900">{{ smallRoomSeatSummary.available }}</p>
             </div>
-            <div class="rounded-xl bg-rose-400/15 px-2 py-2 backdrop-blur-sm">
-              <p class="text-[11px] text-rose-100">占用</p>
-              <p class="mt-1 text-lg font-bold text-rose-50">{{ smallRoomSeatSummary.occupied }}</p>
+            <div class="fresh-stat fresh-stat--occupied rounded-xl px-2 py-2">
+              <p class="text-[11px] text-pink-700">占用</p>
+              <p class="mt-1 text-lg font-bold text-pink-900">{{ smallRoomSeatSummary.occupied }}</p>
             </div>
           </div>
         </button>
         <button
           type="button"
           @click="openGardenModal"
-          class="w-full min-w-[280px] shrink-0 snap-start rounded-2xl border border-slate-300 bg-[radial-gradient(circle_at_top_left,_rgba(74,222,128,0.18),_transparent_45%),linear-gradient(135deg,#0f172a,#166534_48%,#0f766e)] p-4 text-left text-white hover:shadow-lg transition md:min-w-0 h-full flex flex-col"
+          class="fresh-card fresh-card--garden w-full min-w-[280px] shrink-0 snap-start rounded-2xl p-4 text-left transition md:min-w-0 h-full flex flex-col"
         >
           <div class="flex items-start justify-between gap-3">
             <div>
-              <p class="text-base font-bold">花园座位分布</p>
-              <p class="mt-1 text-xs text-slate-200">点击查看花园座位图（单座位左键开台，多人模式左键点选后确认）</p>
+              <p class="text-base font-bold text-cyan-900">花园座位分布</p>
+              <p class="mt-1 text-xs text-sky-700/85">点击查看花园座位图（单座位左键开台，多人模式左键点选后确认）</p>
             </div>
-            <span class="rounded-full bg-white/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-100">Garden</span>
+            <span class="fresh-card__tag rounded-full px-2 py-0.5 text-[11px] font-semibold">Garden</span>
           </div>
           <div class="mt-4 grid grid-cols-3 gap-2 text-center mt-auto">
-            <div class="rounded-xl bg-white/10 px-2 py-2 backdrop-blur-sm">
-              <p class="text-[11px] text-slate-200">总座位</p>
-              <p class="mt-1 text-lg font-bold">{{ gardenSeatSummary.total }}</p>
+            <div class="fresh-stat fresh-stat--total rounded-xl px-2 py-2">
+              <p class="text-[11px] text-slate-500">总座位</p>
+              <p class="mt-1 text-lg font-bold text-slate-900">{{ gardenSeatSummary.total }}</p>
             </div>
-            <div class="rounded-xl bg-emerald-400/15 px-2 py-2 backdrop-blur-sm">
-              <p class="text-[11px] text-emerald-100">剩余</p>
-              <p class="mt-1 text-lg font-bold text-emerald-50">{{ gardenSeatSummary.available }}</p>
+            <div class="fresh-stat fresh-stat--available rounded-xl px-2 py-2">
+              <p class="text-[11px] text-cyan-700">剩余</p>
+              <p class="mt-1 text-lg font-bold text-cyan-900">{{ gardenSeatSummary.available }}</p>
             </div>
-            <div class="rounded-xl bg-rose-400/15 px-2 py-2 backdrop-blur-sm">
-              <p class="text-[11px] text-rose-100">占用</p>
-              <p class="mt-1 text-lg font-bold text-rose-50">{{ gardenSeatSummary.occupied }}</p>
+            <div class="fresh-stat fresh-stat--occupied rounded-xl px-2 py-2">
+              <p class="text-[11px] text-pink-700">占用</p>
+              <p class="mt-1 text-lg font-bold text-pink-900">{{ gardenSeatSummary.occupied }}</p>
             </div>
           </div>
         </button>
         <button
           type="button"
           @click="openUpstairsModal"
-          class="w-full min-w-[280px] shrink-0 snap-start rounded-2xl border border-slate-300 bg-[radial-gradient(circle_at_top_left,_rgba(251,191,36,0.18),_transparent_45%),linear-gradient(135deg,#111827,#92400e_48%,#b45309)] p-4 text-left text-white hover:shadow-lg transition md:min-w-0 h-full flex flex-col"
+          class="fresh-card fresh-card--upstairs w-full min-w-[280px] shrink-0 snap-start rounded-2xl p-4 text-left transition md:min-w-0 h-full flex flex-col"
         >
           <div class="flex items-start justify-between gap-3">
             <div>
-              <p class="text-base font-bold">楼上座位分布</p>
-              <p class="mt-1 text-xs text-slate-200">点击查看楼上座位图（单座位左键开台，多人模式左键点选后确认）</p>
+              <p class="text-base font-bold text-indigo-900">楼上座位分布</p>
+              <p class="mt-1 text-xs text-sky-700/85">点击查看楼上座位图（单座位左键开台，多人模式左键点选后确认）</p>
             </div>
-            <span class="rounded-full bg-white/15 px-2 py-0.5 text-[11px] font-semibold text-amber-100">Upstairs</span>
+            <span class="fresh-card__tag rounded-full px-2 py-0.5 text-[11px] font-semibold">Upstairs</span>
           </div>
           <div class="mt-4 grid grid-cols-3 gap-2 text-center mt-auto">
-            <div class="rounded-xl bg-white/10 px-2 py-2 backdrop-blur-sm">
-              <p class="text-[11px] text-slate-200">总座位</p>
-              <p class="mt-1 text-lg font-bold">{{ upstairsSeatSummary.total }}</p>
+            <div class="fresh-stat fresh-stat--total rounded-xl px-2 py-2">
+              <p class="text-[11px] text-slate-500">总座位</p>
+              <p class="mt-1 text-lg font-bold text-slate-900">{{ upstairsSeatSummary.total }}</p>
             </div>
-            <div class="rounded-xl bg-emerald-400/15 px-2 py-2 backdrop-blur-sm">
-              <p class="text-[11px] text-emerald-100">剩余</p>
-              <p class="mt-1 text-lg font-bold text-emerald-50">{{ upstairsSeatSummary.available }}</p>
+            <div class="fresh-stat fresh-stat--available rounded-xl px-2 py-2">
+              <p class="text-[11px] text-cyan-700">剩余</p>
+              <p class="mt-1 text-lg font-bold text-cyan-900">{{ upstairsSeatSummary.available }}</p>
             </div>
-            <div class="rounded-xl bg-rose-400/15 px-2 py-2 backdrop-blur-sm">
-              <p class="text-[11px] text-rose-100">占用</p>
-              <p class="mt-1 text-lg font-bold text-rose-50">{{ upstairsSeatSummary.occupied }}</p>
+            <div class="fresh-stat fresh-stat--occupied rounded-xl px-2 py-2">
+              <p class="text-[11px] text-pink-700">占用</p>
+              <p class="mt-1 text-lg font-bold text-pink-900">{{ upstairsSeatSummary.occupied }}</p>
             </div>
           </div>
         </button>
@@ -3975,4 +3975,86 @@ onUnmounted(() => {
     </Teleport>
   </div>
 </template>
+
+<style scoped>
+.fresh-card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  box-shadow: 0 12px 30px -18px rgba(56, 189, 248, 0.45), 0 14px 34px -20px rgba(244, 114, 182, 0.38);
+  backdrop-filter: blur(4px);
+}
+
+.fresh-card::before {
+  content: '';
+  position: absolute;
+  inset: -35% auto auto -18%;
+  width: 210px;
+  height: 210px;
+  border-radius: 9999px;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.78) 0%, rgba(255, 255, 255, 0) 72%);
+  pointer-events: none;
+}
+
+.fresh-card::after {
+  content: '';
+  position: absolute;
+  right: -62px;
+  bottom: -86px;
+  width: 210px;
+  height: 210px;
+  border-radius: 9999px;
+  background: radial-gradient(circle, rgba(186, 230, 253, 0.42) 0%, rgba(186, 230, 253, 0) 70%);
+  pointer-events: none;
+}
+
+.fresh-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 18px 34px -18px rgba(56, 189, 248, 0.55), 0 18px 36px -20px rgba(244, 114, 182, 0.45);
+}
+
+.fresh-card--living {
+  background: linear-gradient(142deg, #f6fbff 0%, #e6f7ff 46%, #fdf4ff 100%);
+}
+
+.fresh-card--overview {
+  background: linear-gradient(142deg, #f7fbff 0%, #e0f2fe 44%, #fce7f3 100%);
+}
+
+.fresh-card--small {
+  background: linear-gradient(142deg, #f8fbff 0%, #e0f2fe 40%, #fce7f3 100%);
+}
+
+.fresh-card--garden {
+  background: linear-gradient(142deg, #f5fbff 0%, #dbeafe 35%, #fce7f3 100%);
+}
+
+.fresh-card--upstairs {
+  background: linear-gradient(142deg, #f3f9ff 0%, #dbeafe 42%, #f9e9ff 100%);
+}
+
+.fresh-card__tag {
+  border: 1px solid rgba(125, 211, 252, 0.55);
+  color: #0f766e;
+  background: rgba(255, 255, 255, 0.66);
+  backdrop-filter: blur(2px);
+}
+
+.fresh-stat {
+  border: 1px solid rgba(186, 230, 253, 0.75);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.fresh-stat--total {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.fresh-stat--available {
+  background: linear-gradient(180deg, rgba(240, 253, 250, 0.84) 0%, rgba(207, 250, 254, 0.64) 100%);
+}
+
+.fresh-stat--occupied {
+  background: linear-gradient(180deg, rgba(253, 242, 248, 0.84) 0%, rgba(252, 231, 243, 0.7) 100%);
+}
+</style>
 
