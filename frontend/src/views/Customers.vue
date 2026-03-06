@@ -41,6 +41,7 @@ const showRechargeDialog = ref(false)
 const showConsumeDialog = ref(false)
 const showDetailDialog = ref(false)
 const showAddCustomerDialog = ref(false)
+const showDeleteConfirmDialog = ref(false)
 const feedback = reactive({
   tone: 'info',
   message: ''
@@ -59,6 +60,13 @@ const addCustomerErrors = ref({})
 const showEditCustomerDialog = ref(false)
 const editCustomerLoading = ref(false)
 const deleteCustomerLoading = ref(false)
+const deleteConfirmState = reactive({
+  mode: 'single',
+  customerId: '',
+  customerName: '',
+  batchIds: [],
+  batchNames: []
+})
 const editCustomerForm = reactive({
   id: '',
   name: '',
@@ -165,6 +173,27 @@ const allVisibleSelected = computed(() => (
   customers.value.length > 0
   && customers.value.every((customer) => selectedCustomerIds.value.has(customer.id))
 ))
+const deleteConfirmTitle = computed(() => (
+  deleteConfirmState.mode === 'batch' ? '确认批量删除客户' : '确认删除客户'
+))
+const deleteConfirmMessage = computed(() => {
+  if (deleteConfirmState.mode === 'batch') {
+    return `即将删除已选 ${deleteConfirmState.batchIds.length} 位客户，此操作不可恢复。`
+  }
+  return `即将删除客户“${deleteConfirmState.customerName || '-'}”，此操作不可恢复。`
+})
+const deleteConfirmPreviewNames = computed(() => {
+  const source = deleteConfirmState.mode === 'batch'
+    ? deleteConfirmState.batchNames
+    : [deleteConfirmState.customerName]
+  return source.filter(Boolean).slice(0, 4)
+})
+const deleteConfirmRemainingCount = computed(() => {
+  const totalCount = deleteConfirmState.mode === 'batch'
+    ? deleteConfirmState.batchNames.filter(Boolean).length
+    : (deleteConfirmState.customerName ? 1 : 0)
+  return Math.max(0, totalCount - deleteConfirmPreviewNames.value.length)
+})
 
 const validCustomers = computed(() =>
   customers.value.filter((customer) => String(customer?.id ?? '').trim().length > 0)
@@ -397,6 +426,8 @@ function normalizeTransaction(transaction = {}) {
   return {
     ...transaction,
     type: transaction.type === 'consume' ? 'consumption' : transaction.type,
+    amount: Number(transaction.amount ?? 0),
+    balanceDelta: Number(transaction.balanceDelta ?? transaction.balance_delta ?? 0),
     bonusAmount: Number(transaction.bonusAmount ?? transaction.bonus_amount ?? 0),
     paymentMethod: transaction.paymentMethod ?? transaction.payment_method ?? '',
     createdAt: transaction.createdAt ?? transaction.created_at ?? transaction.transaction_time ?? null
@@ -419,16 +450,51 @@ function formatDate(dateValue) {
   return String(dateValue).split('T')[0]
 }
 
+function formatBirthdayInputLabel(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return '年-月-日'
+  const parts = raw.split('-')
+  if (parts.length !== 3) return raw
+
+  const [year, month, day] = parts
+  const yearNum = Number.parseInt(year, 10)
+  const monthNum = Number.parseInt(month, 10)
+  const dayNum = Number.parseInt(day, 10)
+
+  if (!Number.isFinite(yearNum) || !Number.isFinite(monthNum) || !Number.isFinite(dayNum)) {
+    return raw
+  }
+
+  return `${yearNum}-${String(monthNum).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`
+}
+
 function getTransactionTypeLabel(type) {
   if (type === 'recharge') return '充值'
   if (type === 'consumption') return '消费'
+  if (type === 'expense') return '支出'
+  if (type === 'bead_purchase') return '买豆支出'
   return '-'
 }
 
 function getTransactionTypeClass(type) {
   if (type === 'recharge') return 'bg-green-100 text-green-700'
   if (type === 'consumption') return 'bg-orange-100 text-orange-700'
+  if (type === 'expense') return 'bg-rose-100 text-rose-700'
+  if (type === 'bead_purchase') return 'bg-amber-100 text-amber-700'
   return 'bg-gray-100 text-gray-700'
+}
+
+function getBalanceDeltaClass(balanceDelta) {
+  if (balanceDelta > 0) return 'text-green-600'
+  if (balanceDelta < 0) return 'text-orange-600'
+  return 'text-gray-500'
+}
+
+function formatSignedAmount(amount) {
+  const normalized = Number(amount) || 0
+  if (normalized > 0) return `+￥${formatAmount(normalized)}`
+  if (normalized < 0) return `-￥${formatAmount(Math.abs(normalized))}`
+  return '￥0.00'
 }
 
 function resetAddCustomerForm() {
@@ -498,6 +564,42 @@ function openEditCustomerDialog() {
   showEditCustomerDialog.value = true
 }
 
+function resetDeleteConfirmState() {
+  deleteConfirmState.mode = 'single'
+  deleteConfirmState.customerId = ''
+  deleteConfirmState.customerName = ''
+  deleteConfirmState.batchIds = []
+  deleteConfirmState.batchNames = []
+}
+
+function closeDeleteConfirmDialog() {
+  if (deleteCustomerLoading.value || batchDeleteLoading.value) return
+  showDeleteConfirmDialog.value = false
+  resetDeleteConfirmState()
+}
+
+function openDeleteCustomerConfirm(customer) {
+  if (!customer?.id) return
+  deleteConfirmState.mode = 'single'
+  deleteConfirmState.customerId = customer.id
+  deleteConfirmState.customerName = customer.name || customer.id
+  deleteConfirmState.batchIds = []
+  deleteConfirmState.batchNames = []
+  showDeleteConfirmDialog.value = true
+}
+
+function openBatchDeleteConfirm() {
+  if (!hasSelectedCustomers.value) return
+  const targetIds = Array.from(selectedCustomerIds.value)
+  const customerMap = new Map(customers.value.map((customer) => [customer.id, customer]))
+  deleteConfirmState.mode = 'batch'
+  deleteConfirmState.customerId = ''
+  deleteConfirmState.customerName = ''
+  deleteConfirmState.batchIds = targetIds
+  deleteConfirmState.batchNames = targetIds.map((id) => customerMap.get(id)?.name || id)
+  showDeleteConfirmDialog.value = true
+}
+
 function validateEditCustomerForm() {
   const errors = {}
   if (!String(editCustomerForm.name || '').trim()) {
@@ -532,16 +634,10 @@ async function submitEditCustomer() {
   }
 }
 
-async function deleteCustomerFromDetail() {
-  if (!selectedCustomerDetail.value) return
-  const customerName = selectedCustomerDetail.value.name || ''
-  if (!window.confirm(`确认删除客户“${customerName}”？此操作不可恢复。`)) {
-    return
-  }
-
+async function performDeleteCustomer(targetId) {
+  if (!targetId) return
   deleteCustomerLoading.value = true
   try {
-    const targetId = selectedCustomerDetail.value.id
     await api.delete(`/customers/${targetId}`)
     const nextSelectedIds = new Set(selectedCustomerIds.value)
     nextSelectedIds.delete(targetId)
@@ -558,6 +654,11 @@ async function deleteCustomerFromDetail() {
   } finally {
     deleteCustomerLoading.value = false
   }
+}
+
+async function deleteCustomerFromDetail() {
+  if (!selectedCustomerDetail.value) return
+  openDeleteCustomerConfirm(selectedCustomerDetail.value)
 }
 
 function clearSelectedCustomers() {
@@ -592,11 +693,11 @@ function toggleSelectAllVisibleCustomers(checked = false) {
 
 async function batchDeleteCustomers() {
   if (!hasSelectedCustomers.value) return
+  openBatchDeleteConfirm()
+}
 
-  const targetIds = Array.from(selectedCustomerIds.value)
-  const confirmed = window.confirm(`确认删除已选 ${targetIds.length} 位客户？此操作不可恢复。`)
-  if (!confirmed) return
-
+async function performBatchDeleteCustomers(targetIds) {
+  if (!Array.isArray(targetIds) || targetIds.length === 0) return
   batchDeleteLoading.value = true
   try {
     const results = await Promise.allSettled(
@@ -639,6 +740,18 @@ async function batchDeleteCustomers() {
     showFeedback('error', error?.response?.data?.message || error?.message || '批量删除失败')
   } finally {
     batchDeleteLoading.value = false
+  }
+}
+
+async function confirmDeleteAction() {
+  if (deleteConfirmState.mode === 'batch') {
+    await performBatchDeleteCustomers([...deleteConfirmState.batchIds])
+  } else {
+    await performDeleteCustomer(deleteConfirmState.customerId)
+  }
+
+  if (!deleteCustomerLoading.value && !batchDeleteLoading.value) {
+    closeDeleteConfirmDialog()
   }
 }
 
@@ -1167,7 +1280,7 @@ onUnmounted(() => {
         </div>
         <div class="flex flex-wrap items-center gap-2">
           <button
-            @click="batchDeleteCustomers"
+            @click="openBatchDeleteConfirm"
             :disabled="batchDeleteLoading || !hasSelectedCustomers"
             class="page-hero__action page-hero__action--danger"
           >
@@ -1331,6 +1444,47 @@ onUnmounted(() => {
 
     <Teleport to="body">
       <div
+        v-if="showDeleteConfirmDialog"
+        class="fixed inset-0 bg-black bg-opacity-55 flex items-center justify-center z-[70] p-4"
+        @mousedown="onBackdropMouseDown('customers-delete-confirm', $event)"
+        @mouseup="onBackdropMouseUp('customers-delete-confirm', $event) && closeDeleteConfirmDialog()"
+      >
+        <div class="w-full max-w-sm rounded-2xl border border-gray-200 bg-white shadow-xl">
+          <div class="px-6 py-5">
+            <h3 class="text-lg font-semibold text-gray-900">{{ deleteConfirmTitle }}</h3>
+            <p class="mt-2 text-sm text-gray-600">{{ deleteConfirmMessage }}</p>
+            <div class="mt-4 rounded-lg bg-gray-50 px-3 py-3 text-sm text-gray-700">
+              <p class="font-medium text-gray-900">删除对象</p>
+              <p class="mt-1 leading-6">
+                {{ deleteConfirmPreviewNames.join('、') || '-' }}
+                <span v-if="deleteConfirmRemainingCount > 0" class="text-gray-500"> 等另外 {{ deleteConfirmRemainingCount }} 位</span>
+              </p>
+            </div>
+            <p class="mt-3 text-xs text-rose-600">删除后不可恢复。</p>
+          </div>
+
+          <div class="flex items-center justify-end gap-3 border-t border-gray-100 px-6 py-4">
+            <button
+              @click="closeDeleteConfirmDialog"
+              :disabled="deleteCustomerLoading || batchDeleteLoading"
+              class="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              取消
+            </button>
+            <button
+              @click="confirmDeleteAction"
+              :disabled="deleteCustomerLoading || batchDeleteLoading"
+              class="rounded-lg bg-red-600 px-4 py-2 text-sm text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-red-300"
+            >
+              {{ deleteCustomerLoading || batchDeleteLoading ? '删除中...' : '确认删除' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div
         v-if="showAddCustomerDialog"
         class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
         @mousedown="onBackdropMouseDown('customers-add', $event)"
@@ -1379,11 +1533,22 @@ onUnmounted(() => {
             </div>
             <div>
               <label class="block text-sm font-medium text-gray-700 mb-1">生日</label>
-              <input
-                v-model="addCustomerForm.birthday"
-                type="date"
-                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
+              <div class="customer-date-wrap">
+                <input
+                  v-model="addCustomerForm.birthday"
+                  type="date"
+                  class="customer-date-input w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                <span
+                  aria-hidden="true"
+                  :class="[
+                    'customer-date-overlay',
+                    addCustomerForm.birthday ? 'customer-date-overlay--value' : 'customer-date-overlay--placeholder'
+                  ]"
+                >
+                  {{ formatBirthdayInputLabel(addCustomerForm.birthday) }}
+                </span>
+              </div>
             </div>
           </div>
           <div class="px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
@@ -1490,7 +1655,7 @@ onUnmounted(() => {
                   <thead class="bg-gray-50">
                     <tr>
                       <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">类型</th>
-                      <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">金额</th>
+                      <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">交易金额/余额</th>
                       <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">说明</th>
                       <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">时间</th>
                     </tr>
@@ -1506,8 +1671,11 @@ onUnmounted(() => {
                         </span>
                       </td>
                       <td class="px-4 py-2 text-sm">
-                        <div :class="transaction.type === 'recharge' ? 'text-green-600' : 'text-orange-600'">
-                          {{ transaction.type === 'recharge' ? '+' : '-' }}￥{{ formatAmount(transaction.amount) }}
+                        <div :class="transaction.type === 'recharge' ? 'text-green-600' : 'text-slate-700'">
+                          交易金额 ￥{{ formatAmount(transaction.amount) }}
+                        </div>
+                        <div :class="getBalanceDeltaClass(transaction.balanceDelta)" class="text-xs">
+                          余额变动 {{ formatSignedAmount(transaction.balanceDelta) }}
                         </div>
                         <div v-if="transaction.type === 'recharge' && transaction.bonusAmount > 0" class="text-xs text-green-600">
                           赠送 +￥{{ formatAmount(transaction.bonusAmount) }}
@@ -2151,5 +2319,54 @@ onUnmounted(() => {
     </Teleport>
   </div>
 </template>
+
+<style scoped>
+.customer-date-wrap {
+  position: relative;
+}
+
+.customer-date-overlay {
+  position: absolute;
+  left: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+.customer-date-overlay--placeholder {
+  color: #94a3b8;
+}
+
+.customer-date-overlay--value {
+  color: #0f172a;
+  font-weight: 500;
+}
+
+.customer-date-input {
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.customer-date-input::-webkit-datetime-edit {
+  color: transparent;
+  letter-spacing: 0.01em;
+}
+
+.customer-date-input::-webkit-datetime-edit-text {
+  color: transparent;
+  padding: 0;
+}
+
+.customer-date-input::-webkit-calendar-picker-indicator {
+  opacity: 0.82;
+}
+</style>
 
 

@@ -13,6 +13,18 @@ def _strip_misc_marker(description):
     return MISC_MARKER_PATTERN.sub('', text).strip()
 
 
+def _calculate_transaction_balance_delta(transaction):
+    tx_type = str(getattr(transaction, 'type', '') or '').strip().lower()
+    amount = float(getattr(transaction, 'amount', 0.0) or 0.0)
+    bonus_amount = float(getattr(transaction, 'bonus_amount', 0.0) or 0.0)
+
+    if tx_type == 'recharge':
+        return amount + bonus_amount
+    if tx_type == 'consumption':
+        return -amount
+    return 0.0
+
+
 class User(db.Model):
     __tablename__ = 'users'
 
@@ -120,11 +132,13 @@ class Transaction(db.Model):
 
     def to_dict(self):
         status = str(self.status or '').strip().lower() or 'completed'
+        balance_delta = _calculate_transaction_balance_delta(self)
         return {
             'id': self.id,
             'customer_id': self.customer_id,
             'type': self.type,
             'amount': self.amount,
+            'balance_delta': balance_delta,
             'bonus_amount': self.bonus_amount,
             'payment_method': self.payment_method,
             'description': _strip_misc_marker(self.description),

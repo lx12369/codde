@@ -48,6 +48,7 @@ const showLivingRoomModal = ref(false)
 const showSmallRoomModal = ref(false)
 const showGardenModal = ref(false)
 const showUpstairsModal = ref(false)
+const showSeatOverviewModal = ref(false)
 const restoreRoomAfterAddModal = ref('')
 const warningQueue = ref([])
 const activeWarning = ref(null)
@@ -736,6 +737,61 @@ const upstairsSeatSummary = computed(() => {
     available: Math.max(0, totals.total - totals.occupied)
   }
 })
+
+const overallSeatSummary = computed(() => {
+  const summaries = [
+    livingRoomSeatSummary.value,
+    smallRoomSeatSummary.value,
+    gardenSeatSummary.value,
+    upstairsSeatSummary.value
+  ]
+
+  return summaries.reduce((acc, summary) => {
+    acc.total += Number(summary?.total) || 0
+    acc.occupied += Number(summary?.occupied) || 0
+    acc.available += Number(summary?.available) || 0
+    return acc
+  }, { total: 0, occupied: 0, available: 0 })
+})
+
+const seatOverviewSections = computed(() => ([
+  {
+    key: 'living',
+    title: '客厅',
+    subtitle: '大厅区域',
+    summary: livingRoomSeatSummary.value,
+    tables: seatLayoutTables.value,
+    panelClass: 'border-slate-200 bg-gradient-to-br from-slate-50 via-blue-50 to-cyan-50',
+    badgeClass: 'bg-blue-100 text-blue-700'
+  },
+  {
+    key: 'small',
+    title: '小房间',
+    subtitle: '私密小间',
+    summary: smallRoomSeatSummary.value,
+    tables: smallRoomSeatLayoutTables.value,
+    panelClass: 'border-fuchsia-200 bg-gradient-to-br from-violet-50 via-fuchsia-50 to-pink-50',
+    badgeClass: 'bg-fuchsia-100 text-fuchsia-700'
+  },
+  {
+    key: 'garden',
+    title: '花园',
+    subtitle: '露台区域',
+    summary: gardenSeatSummary.value,
+    tables: gardenSeatLayoutTables.value,
+    panelClass: 'border-emerald-200 bg-gradient-to-br from-emerald-50 via-lime-50 to-teal-50',
+    badgeClass: 'bg-emerald-100 text-emerald-700'
+  },
+  {
+    key: 'upstairs',
+    title: '楼上',
+    subtitle: '楼上区域',
+    summary: upstairsSeatSummary.value,
+    tables: upstairsSeatLayoutTables.value,
+    panelClass: 'border-amber-200 bg-gradient-to-br from-amber-50 via-yellow-50 to-orange-50',
+    badgeClass: 'bg-amber-100 text-amber-700'
+  }
+]))
 
 function getUpstairsSeatGridPositionClass(seatNo) {
   const normalizedSeat = String(seatNo || '').trim()
@@ -1490,6 +1546,9 @@ async function openAddModal() {
   } else if (showUpstairsModal.value) {
     restoreRoomAfterAddModal.value = 'upstairs'
     closeUpstairsModal()
+  } else if (showSeatOverviewModal.value) {
+    restoreRoomAfterAddModal.value = 'overview'
+    closeSeatOverviewModal()
   } else {
     restoreRoomAfterAddModal.value = ''
   }
@@ -1539,6 +1598,16 @@ function openUpstairsModal() {
 function closeUpstairsModal() {
   deactivateMultiSeatSelectionMode()
   showUpstairsModal.value = false
+}
+
+function openSeatOverviewModal() {
+  deactivateMultiSeatSelectionMode()
+  showSeatOverviewModal.value = true
+}
+
+function closeSeatOverviewModal() {
+  deactivateMultiSeatSelectionMode()
+  showSeatOverviewModal.value = false
 }
 
 async function openAddModalForSeat(tableArea, seatNo, occupied = false) {
@@ -1742,6 +1811,8 @@ function closeAddModal(force = false) {
     showGardenModal.value = true
   } else if (restoreRoomAfterAddModal.value === 'upstairs') {
     showUpstairsModal.value = true
+  } else if (restoreRoomAfterAddModal.value === 'overview') {
+    showSeatOverviewModal.value = true
   }
   addErrors.value = {}
   addCurrentBalance.value = null
@@ -2212,7 +2283,7 @@ function handleGlobalKeydown(event) {
   if (event.key !== 'Escape') return
   if (submitting.value) return
 
-  const roomModalVisible = showLivingRoomModal.value || showSmallRoomModal.value || showGardenModal.value || showUpstairsModal.value
+  const roomModalVisible = showLivingRoomModal.value || showSmallRoomModal.value || showGardenModal.value || showUpstairsModal.value || showSeatOverviewModal.value
   if (roomModalVisible && pendingMultiSeatSelection.value) {
     event.preventDefault()
     clearPendingMultiSeatSelection()
@@ -2241,6 +2312,12 @@ function handleGlobalKeydown(event) {
   if (showUpstairsModal.value) {
     event.preventDefault()
     closeUpstairsModal()
+    return
+  }
+
+  if (showSeatOverviewModal.value) {
+    event.preventDefault()
+    closeSeatOverviewModal()
     return
   }
 
@@ -2397,77 +2474,360 @@ onUnmounted(() => {
     </div>
 
     <section class="management-surface p-4 sm:p-5">
-      <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+      <div class="flex gap-3 overflow-x-auto snap-x snap-mandatory pb-2 md:grid md:grid-cols-2 xl:grid-cols-5 md:overflow-visible md:snap-none md:pb-0">
+        <button
+          type="button"
+          @click="openSeatOverviewModal"
+          class="w-full min-w-[280px] shrink-0 snap-start rounded-2xl border border-slate-300 bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.18),_transparent_45%),linear-gradient(135deg,#0f172a,#1e293b_50%,#0f766e)] p-4 text-left text-white hover:shadow-lg transition md:min-w-0 h-full flex flex-col"
+        >
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <p class="text-base font-bold">全场座位总览</p>
+              <p class="mt-1 text-xs text-slate-200">跨房间看空位，适合多人套餐一次选齐</p>
+            </div>
+            <span class="rounded-full bg-white/15 px-2 py-0.5 text-[11px] font-semibold text-cyan-100">Overview</span>
+          </div>
+          <div class="mt-4 grid grid-cols-3 gap-2 text-center mt-auto">
+            <div class="rounded-xl bg-white/10 px-2 py-2 backdrop-blur-sm">
+              <p class="text-[11px] text-slate-200">总座位</p>
+              <p class="mt-1 text-lg font-bold">{{ overallSeatSummary.total }}</p>
+            </div>
+            <div class="rounded-xl bg-emerald-400/15 px-2 py-2 backdrop-blur-sm">
+              <p class="text-[11px] text-emerald-100">剩余</p>
+              <p class="mt-1 text-lg font-bold text-emerald-50">{{ overallSeatSummary.available }}</p>
+            </div>
+            <div class="rounded-xl bg-rose-400/15 px-2 py-2 backdrop-blur-sm">
+              <p class="text-[11px] text-rose-100">占用</p>
+              <p class="mt-1 text-lg font-bold text-rose-50">{{ overallSeatSummary.occupied }}</p>
+            </div>
+          </div>
+        </button>
         <button
           type="button"
           @click="openLivingRoomModal"
-          class="w-full rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-blue-50 to-cyan-50 p-4 text-left hover:border-blue-300 hover:shadow-md transition"
+          class="w-full min-w-[280px] shrink-0 snap-start rounded-2xl border border-slate-300 bg-[radial-gradient(circle_at_top_left,_rgba(96,165,250,0.18),_transparent_45%),linear-gradient(135deg,#0f172a,#1d4ed8_50%,#0f766e)] p-4 text-left text-white hover:shadow-lg transition md:min-w-0 h-full flex flex-col"
         >
-          <div class="flex items-center justify-between">
+          <div class="flex items-start justify-between gap-3">
             <div>
-              <p class="text-base font-bold text-slate-900">客厅座位分布</p>
-              <p class="text-xs text-slate-600 mt-1">点击查看客厅座位图（单座位左键开台，多人模式左键点选后确认）</p>
+              <p class="text-base font-bold">客厅座位分布</p>
+              <p class="mt-1 text-xs text-slate-200">点击查看客厅座位图（单座位左键开台，多人模式左键点选后确认）</p>
             </div>
-            <div class="text-right">
-              <p class="text-xs text-slate-500">总座位 {{ livingRoomSeatSummary.total }}</p>
-              <p class="text-sm font-semibold text-emerald-700">剩余 {{ livingRoomSeatSummary.available }}</p>
-              <p class="text-sm font-semibold text-rose-700">占用 {{ livingRoomSeatSummary.occupied }}</p>
+            <span class="rounded-full bg-white/15 px-2 py-0.5 text-[11px] font-semibold text-cyan-100">Living</span>
+          </div>
+          <div class="mt-4 grid grid-cols-3 gap-2 text-center mt-auto">
+            <div class="rounded-xl bg-white/10 px-2 py-2 backdrop-blur-sm">
+              <p class="text-[11px] text-slate-200">总座位</p>
+              <p class="mt-1 text-lg font-bold">{{ livingRoomSeatSummary.total }}</p>
+            </div>
+            <div class="rounded-xl bg-emerald-400/15 px-2 py-2 backdrop-blur-sm">
+              <p class="text-[11px] text-emerald-100">剩余</p>
+              <p class="mt-1 text-lg font-bold text-emerald-50">{{ livingRoomSeatSummary.available }}</p>
+            </div>
+            <div class="rounded-xl bg-rose-400/15 px-2 py-2 backdrop-blur-sm">
+              <p class="text-[11px] text-rose-100">占用</p>
+              <p class="mt-1 text-lg font-bold text-rose-50">{{ livingRoomSeatSummary.occupied }}</p>
             </div>
           </div>
         </button>
         <button
           type="button"
           @click="openSmallRoomModal"
-          class="w-full rounded-2xl border border-slate-200 bg-gradient-to-br from-violet-50 via-fuchsia-50 to-pink-50 p-4 text-left hover:border-fuchsia-300 hover:shadow-md transition"
+          class="w-full min-w-[280px] shrink-0 snap-start rounded-2xl border border-slate-300 bg-[radial-gradient(circle_at_top_left,_rgba(217,70,239,0.2),_transparent_45%),linear-gradient(135deg,#111827,#7c3aed_48%,#db2777)] p-4 text-left text-white hover:shadow-lg transition md:min-w-0 h-full flex flex-col"
         >
-          <div class="flex items-center justify-between">
+          <div class="flex items-start justify-between gap-3">
             <div>
-              <p class="text-base font-bold text-slate-900">小房间座位分布</p>
-              <p class="text-xs text-slate-600 mt-1">点击查看小房间座位图（单座位左键开台，多人模式左键点选后确认）</p>
+              <p class="text-base font-bold">小房间座位分布</p>
+              <p class="mt-1 text-xs text-slate-200">点击查看小房间座位图（单座位左键开台，多人模式左键点选后确认）</p>
             </div>
-            <div class="text-right">
-              <p class="text-xs text-slate-500">总座位 {{ smallRoomSeatSummary.total }}</p>
-              <p class="text-sm font-semibold text-emerald-700">剩余 {{ smallRoomSeatSummary.available }}</p>
-              <p class="text-sm font-semibold text-rose-700">占用 {{ smallRoomSeatSummary.occupied }}</p>
+            <span class="rounded-full bg-white/15 px-2 py-0.5 text-[11px] font-semibold text-fuchsia-100">Private</span>
+          </div>
+          <div class="mt-4 grid grid-cols-3 gap-2 text-center mt-auto">
+            <div class="rounded-xl bg-white/10 px-2 py-2 backdrop-blur-sm">
+              <p class="text-[11px] text-slate-200">总座位</p>
+              <p class="mt-1 text-lg font-bold">{{ smallRoomSeatSummary.total }}</p>
+            </div>
+            <div class="rounded-xl bg-emerald-400/15 px-2 py-2 backdrop-blur-sm">
+              <p class="text-[11px] text-emerald-100">剩余</p>
+              <p class="mt-1 text-lg font-bold text-emerald-50">{{ smallRoomSeatSummary.available }}</p>
+            </div>
+            <div class="rounded-xl bg-rose-400/15 px-2 py-2 backdrop-blur-sm">
+              <p class="text-[11px] text-rose-100">占用</p>
+              <p class="mt-1 text-lg font-bold text-rose-50">{{ smallRoomSeatSummary.occupied }}</p>
             </div>
           </div>
         </button>
         <button
           type="button"
           @click="openGardenModal"
-          class="w-full rounded-2xl border border-slate-200 bg-gradient-to-br from-emerald-50 via-lime-50 to-teal-50 p-4 text-left hover:border-emerald-300 hover:shadow-md transition"
+          class="w-full min-w-[280px] shrink-0 snap-start rounded-2xl border border-slate-300 bg-[radial-gradient(circle_at_top_left,_rgba(74,222,128,0.18),_transparent_45%),linear-gradient(135deg,#0f172a,#166534_48%,#0f766e)] p-4 text-left text-white hover:shadow-lg transition md:min-w-0 h-full flex flex-col"
         >
-          <div class="flex items-center justify-between">
+          <div class="flex items-start justify-between gap-3">
             <div>
-              <p class="text-base font-bold text-slate-900">花园座位分布</p>
-              <p class="text-xs text-slate-600 mt-1">点击查看花园座位图（单座位左键开台，多人模式左键点选后确认）</p>
+              <p class="text-base font-bold">花园座位分布</p>
+              <p class="mt-1 text-xs text-slate-200">点击查看花园座位图（单座位左键开台，多人模式左键点选后确认）</p>
             </div>
-            <div class="text-right">
-              <p class="text-xs text-slate-500">总座位 {{ gardenSeatSummary.total }}</p>
-              <p class="text-sm font-semibold text-emerald-700">剩余 {{ gardenSeatSummary.available }}</p>
-              <p class="text-sm font-semibold text-rose-700">占用 {{ gardenSeatSummary.occupied }}</p>
+            <span class="rounded-full bg-white/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-100">Garden</span>
+          </div>
+          <div class="mt-4 grid grid-cols-3 gap-2 text-center mt-auto">
+            <div class="rounded-xl bg-white/10 px-2 py-2 backdrop-blur-sm">
+              <p class="text-[11px] text-slate-200">总座位</p>
+              <p class="mt-1 text-lg font-bold">{{ gardenSeatSummary.total }}</p>
+            </div>
+            <div class="rounded-xl bg-emerald-400/15 px-2 py-2 backdrop-blur-sm">
+              <p class="text-[11px] text-emerald-100">剩余</p>
+              <p class="mt-1 text-lg font-bold text-emerald-50">{{ gardenSeatSummary.available }}</p>
+            </div>
+            <div class="rounded-xl bg-rose-400/15 px-2 py-2 backdrop-blur-sm">
+              <p class="text-[11px] text-rose-100">占用</p>
+              <p class="mt-1 text-lg font-bold text-rose-50">{{ gardenSeatSummary.occupied }}</p>
             </div>
           </div>
         </button>
         <button
           type="button"
           @click="openUpstairsModal"
-          class="w-full rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 via-yellow-50 to-orange-50 p-4 text-left hover:border-amber-300 hover:shadow-md transition"
+          class="w-full min-w-[280px] shrink-0 snap-start rounded-2xl border border-slate-300 bg-[radial-gradient(circle_at_top_left,_rgba(251,191,36,0.18),_transparent_45%),linear-gradient(135deg,#111827,#92400e_48%,#b45309)] p-4 text-left text-white hover:shadow-lg transition md:min-w-0 h-full flex flex-col"
         >
-          <div class="flex items-center justify-between">
+          <div class="flex items-start justify-between gap-3">
             <div>
-              <p class="text-base font-bold text-slate-900">楼上座位分布</p>
-              <p class="text-xs text-slate-600 mt-1">点击查看楼上座位图（单座位左键开台，多人模式左键点选后确认）</p>
+              <p class="text-base font-bold">楼上座位分布</p>
+              <p class="mt-1 text-xs text-slate-200">点击查看楼上座位图（单座位左键开台，多人模式左键点选后确认）</p>
             </div>
-            <div class="text-right">
-              <p class="text-xs text-slate-500">总座位 {{ upstairsSeatSummary.total }}</p>
-              <p class="text-sm font-semibold text-emerald-700">剩余 {{ upstairsSeatSummary.available }}</p>
-              <p class="text-sm font-semibold text-rose-700">占用 {{ upstairsSeatSummary.occupied }}</p>
+            <span class="rounded-full bg-white/15 px-2 py-0.5 text-[11px] font-semibold text-amber-100">Upstairs</span>
+          </div>
+          <div class="mt-4 grid grid-cols-3 gap-2 text-center mt-auto">
+            <div class="rounded-xl bg-white/10 px-2 py-2 backdrop-blur-sm">
+              <p class="text-[11px] text-slate-200">总座位</p>
+              <p class="mt-1 text-lg font-bold">{{ upstairsSeatSummary.total }}</p>
+            </div>
+            <div class="rounded-xl bg-emerald-400/15 px-2 py-2 backdrop-blur-sm">
+              <p class="text-[11px] text-emerald-100">剩余</p>
+              <p class="mt-1 text-lg font-bold text-emerald-50">{{ upstairsSeatSummary.available }}</p>
+            </div>
+            <div class="rounded-xl bg-rose-400/15 px-2 py-2 backdrop-blur-sm">
+              <p class="text-[11px] text-rose-100">占用</p>
+              <p class="mt-1 text-lg font-bold text-rose-50">{{ upstairsSeatSummary.occupied }}</p>
             </div>
           </div>
         </button>
       </div>
     </section>
+
+    <Teleport to="body">
+      <div
+        v-if="showSeatOverviewModal"
+        class="fixed inset-0 bg-black bg-opacity-55 flex items-center justify-center z-40 p-4"
+        @mousedown="onBackdropMouseDown('timers-seat-overview', $event)"
+        @mouseup="onBackdropMouseUp('timers-seat-overview', $event) && closeSeatOverviewModal()"
+      >
+        <div class="w-full max-w-7xl max-h-[92vh] overflow-y-auto rounded-[28px] border border-slate-200 bg-white shadow-2xl">
+          <div class="sticky top-0 z-10 border-b border-slate-200 bg-[radial-gradient(circle_at_top_left,_rgba(56,189,248,0.18),_transparent_30%),linear-gradient(135deg,#f8fafc,#eef6ff_45%,#f0fdfa)] px-6 py-5 backdrop-blur">
+            <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <p class="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">Seat Overview</p>
+                <h3 class="mt-1 text-2xl font-black tracking-tight text-slate-900">全场座位总览</h3>
+                <p class="mt-2 text-sm text-slate-600">在一个界面里查看四个房间并跨房间选座，适合多人套餐快速拼桌。</p>
+              </div>
+              <div class="flex items-start gap-3">
+                <div class="grid grid-cols-3 gap-2">
+                  <div class="rounded-2xl border border-slate-200 bg-white/80 px-3 py-2 text-center shadow-sm">
+                    <p class="text-[11px] text-slate-500">总座位</p>
+                    <p class="mt-1 text-lg font-bold text-slate-900">{{ overallSeatSummary.total }}</p>
+                  </div>
+                  <div class="rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-center shadow-sm">
+                    <p class="text-[11px] text-emerald-600">剩余</p>
+                    <p class="mt-1 text-lg font-bold text-emerald-700">{{ overallSeatSummary.available }}</p>
+                  </div>
+                  <div class="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-center shadow-sm">
+                    <p class="text-[11px] text-rose-600">占用</p>
+                    <p class="mt-1 text-lg font-bold text-rose-700">{{ overallSeatSummary.occupied }}</p>
+                  </div>
+                </div>
+                <button
+                  @click="closeSeatOverviewModal"
+                  class="rounded-xl border border-slate-200 bg-white p-2 text-slate-400 hover:text-slate-700"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="p-5">
+            <div class="mb-4 rounded-3xl border border-slate-200 bg-[linear-gradient(135deg,rgba(15,23,42,0.98),rgba(30,41,59,0.95)_45%,rgba(8,145,178,0.9))] px-4 py-4 text-white shadow-lg">
+              <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                <div>
+                  <p class="text-sm font-semibold text-cyan-100">总览操作台</p>
+                  <p class="mt-1 text-xs text-slate-200">单座位直接左键开台；多人模式下左键点选或取消，选好后统一确认。</p>
+                </div>
+                <div class="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    @click="deactivateMultiSeatSelectionMode()"
+                    :class="[
+                      'rounded-xl px-3 py-2 text-xs font-semibold transition-colors',
+                      seatSelectionMode === 'single'
+                        ? 'bg-white text-slate-900'
+                        : 'border border-white/25 text-white hover:bg-white/10'
+                    ]"
+                  >
+                    单座位开台
+                  </button>
+                  <button
+                    type="button"
+                    @click="activateMultiSeatSelectionMode"
+                    :class="[
+                      'rounded-xl px-3 py-2 text-xs font-semibold transition-colors',
+                      seatSelectionMode === 'multi'
+                        ? 'bg-cyan-300 text-slate-950'
+                        : 'border border-cyan-200/40 text-cyan-50 hover:bg-cyan-300/10'
+                    ]"
+                  >
+                    多人选座
+                  </button>
+                </div>
+              </div>
+
+              <div v-if="seatSelectionMode === 'multi'" class="mt-4 rounded-2xl border border-white/15 bg-white/10 px-4 py-3">
+                <p v-if="pendingMultiSeatCount > 0" class="text-sm font-semibold text-white">已选座位：{{ getPendingSeatDisplayText() }}</p>
+                <p v-else class="text-sm text-slate-100">请直接在下方四个房间里点选座位，再次点击已选座位可取消。</p>
+                <p v-if="pendingMultiSeatCount >= 2 && pendingMultiSeatPreset" class="mt-1 text-xs text-cyan-100">
+                  将匹配 {{ pendingMultiSeatPreset.peopleCount }}人套餐，确认后自动预填到新增消费。
+                </p>
+                <p v-else-if="pendingMultiSeatCount >= 2" class="mt-1 text-xs text-amber-100">
+                  当前已选 {{ pendingMultiSeatCount }} 个座位，但未配置对应套餐。
+                </p>
+                <div class="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    @click="confirmPendingMultiSeatSelection"
+                    :disabled="pendingMultiSeatCount < 2 || !pendingMultiSeatPreset"
+                    class="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-900 hover:bg-slate-100 disabled:cursor-not-allowed disabled:bg-white/40 disabled:text-slate-500"
+                  >
+                    确认多人选座
+                  </button>
+                  <button
+                    type="button"
+                    @click="clearPendingMultiSeatSelection"
+                    class="rounded-xl border border-white/20 px-3 py-2 text-xs font-semibold text-white hover:bg-white/10"
+                  >
+                    清空已选
+                  </button>
+                  <button
+                    type="button"
+                    @click="deactivateMultiSeatSelectionMode(true)"
+                    class="rounded-xl border border-white/20 px-3 py-2 text-xs font-semibold text-white hover:bg-white/10"
+                  >
+                    退出多人模式
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 2xl:grid-cols-2 gap-4">
+              <section
+                v-for="section in seatOverviewSections"
+                :key="`overview-${section.key}`"
+                :class="['rounded-3xl border p-4 shadow-sm', section.panelClass]"
+              >
+                <div class="mb-4 flex items-start justify-between gap-3">
+                  <div>
+                    <div class="flex items-center gap-2">
+                      <h4 class="text-lg font-black tracking-tight text-slate-900">{{ section.title }}</h4>
+                      <span :class="['rounded-full px-2 py-0.5 text-[11px] font-semibold', section.badgeClass]">{{ section.subtitle }}</span>
+                    </div>
+                    <p class="mt-1 text-xs text-slate-600">剩余 {{ section.summary.available }} / 占用 {{ section.summary.occupied }} / 总计 {{ section.summary.total }}</p>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-1 gap-4">
+                  <article
+                    v-for="table in section.tables"
+                    :key="`overview-${section.key}-${table.area}`"
+                    :class="[
+                      'rounded-2xl border p-3 shadow-sm transition-all backdrop-blur-sm',
+                      table.occupiedCount > 0 ? 'border-red-300 bg-white/95' : 'border-emerald-200 bg-white/95'
+                    ]"
+                  >
+                    <div class="flex items-center justify-between mb-2">
+                      <p class="text-sm font-bold text-gray-900">{{ table.area }}桌</p>
+                      <p :class="['text-xs font-semibold px-2 py-0.5 rounded-full', table.occupiedCount > 0 ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700']">
+                        {{ table.occupiedCount > 0 ? `已坐 ${table.occupiedCount}/${table.seatCount}` : '当前全空' }}
+                      </p>
+                    </div>
+                    <div
+                      :class="[
+                        'mx-auto rounded-2xl border-2 border-slate-300 bg-gradient-to-b from-slate-100 to-slate-200 px-3 py-3 shadow-inner',
+                        section.key === 'garden' && table.area === 'K'
+                          ? 'max-w-[220px]'
+                          : table.shape === 'square'
+                            ? 'max-w-[180px]'
+                            : table.shape === 'tall'
+                              ? 'max-w-[140px]'
+                              : section.key === 'upstairs'
+                                ? 'max-w-[210px]'
+                                : 'max-w-[240px]'
+                      ]"
+                    >
+                      <div
+                        :class="[
+                          section.key === 'garden' && isGardenKTable(table.area)
+                            ? 'grid grid-cols-4 grid-rows-3 gap-1.5 h-[126px] items-center justify-items-center'
+                            : section.key === 'upstairs'
+                              ? 'grid grid-cols-3 grid-rows-3 gap-1.5 h-[126px] items-center justify-items-center'
+                              : 'grid gap-2'
+                        ]"
+                        :style="(section.key === 'garden' && isGardenKTable(table.area)) || section.key === 'upstairs'
+                          ? undefined
+                          : { gridTemplateColumns: `repeat(${table.seatColumns || 3}, minmax(0, 1fr))` }"
+                      >
+                        <button
+                          v-for="seat in table.seats"
+                          :key="`overview-${section.key}-${table.area}-${seat.seatNo}`"
+                          type="button"
+                          @click="handleSeatLeftClick(table.area, seat.seatNo, seat.occupied)"
+                          :class="[
+                            'relative rounded-lg border flex items-center justify-center font-bold transition-colors',
+                            section.key === 'upstairs'
+                              ? 'h-12 w-12 text-sm'
+                              : section.key === 'garden' && isGardenKTable(table.area)
+                                ? 'h-10 w-10 text-[12px]'
+                                : 'h-10 text-[12px]',
+                            section.key === 'garden' ? getGardenSeatGridPositionClass(table.area, seat.seatNo) : '',
+                            section.key === 'upstairs' ? getUpstairsSeatGridPositionClass(seat.seatNo) : '',
+                            isPendingSeatSelected(table.area, seat.seatNo)
+                              ? 'ring-2 ring-blue-600 ring-offset-2 ring-offset-slate-200'
+                              : '',
+                            seat.occupied
+                              ? 'bg-red-600 border-red-700 text-white'
+                              : 'bg-white border-slate-300 text-slate-800 hover:bg-slate-50 cursor-pointer'
+                          ]"
+                          :title="seat.occupied ? `${seat.customerName || '已占用'}（${table.area}${seat.seatNo}）` : `${table.area}${seat.seatNo} 空位`"
+                        >
+                          {{ seat.seatNo }}
+                          <span
+                            :class="[
+                              section.key === 'upstairs' ? 'absolute top-1 right-1 h-2.5 w-2.5 rounded-full' : 'absolute top-1.5 right-1.5 h-2.5 w-2.5 rounded-full',
+                              seat.occupied ? 'bg-rose-200' : 'bg-emerald-500'
+                            ]"
+                          ></span>
+                        </button>
+                      </div>
+                    </div>
+                    <div class="mt-2 text-xs text-gray-600">
+                      <span v-if="table.occupiedCount > 0">深红座位为占用，浅红座位可开台</span>
+                      <span v-else>全部可开台</span>
+                    </div>
+                  </article>
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <Teleport to="body">
       <div

@@ -361,6 +361,8 @@ const normalizeTransaction = (transaction = {}) => ({
   customerName: transaction.customerName ?? transaction.customer_name ?? '',
   customerPhone: transaction.customerPhone ?? transaction.customer_phone ?? '',
   customerWechat: transaction.customerWechat ?? transaction.customer_wechat ?? '',
+  amount: Number(transaction.amount ?? 0),
+  balanceDelta: Number(transaction.balanceDelta ?? transaction.balance_delta ?? 0),
   bonusAmount: transaction.bonusAmount ?? transaction.bonus_amount ?? 0,
   paymentMethod: transaction.paymentMethod ?? transaction.payment_method ?? '',
   activityId: transaction.activityId ?? transaction.activity_id ?? null,
@@ -1519,12 +1521,21 @@ function isIncomeTransaction(type) {
   return type === 'recharge'
 }
 
-function getTransactionAmountClass(type) {
-  return isIncomeTransaction(type) ? 'text-emerald-600' : 'text-amber-600'
+function getBalanceDeltaClass(balanceDelta) {
+  if (balanceDelta > 0) return 'text-emerald-600'
+  if (balanceDelta < 0) return 'text-amber-600'
+  return 'text-slate-400'
 }
 
-function getTransactionAmountPrefix(type) {
-  return isIncomeTransaction(type) ? '+' : '-'
+function formatSignedAmount(amount) {
+  const normalized = Number(amount) || 0
+  if (normalized > 0) return `+￥${formatAmount(normalized)}`
+  if (normalized < 0) return `-￥${formatAmount(Math.abs(normalized))}`
+  return '￥0.00'
+}
+
+function getTransactionAmountClass(type) {
+  return isIncomeTransaction(type) ? 'text-emerald-600' : 'text-amber-600'
 }
 
 function canCancelTransaction(transaction = {}) {
@@ -1882,7 +1893,8 @@ onUnmounted(() => {
             <tr>
               <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">交易ID</th>
               <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">客户</th>
-              <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">金额</th>
+              <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">交易金额</th>
+              <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">余额变动</th>
               <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">赠送</th>
               <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">支付方式/描述</th>
               <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">时间</th>
@@ -1893,7 +1905,7 @@ onUnmounted(() => {
           </thead>
           <tbody class="divide-y divide-slate-100">
             <tr v-if="loading">
-              <td colspan="9" class="px-6 py-14 text-center">
+              <td colspan="10" class="px-6 py-14 text-center">
                 <div class="flex items-center justify-center gap-2 text-blue-700">
                   <svg class="animate-spin h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -1904,7 +1916,7 @@ onUnmounted(() => {
               </td>
             </tr>
             <tr v-else-if="transactions.length === 0">
-              <td colspan="9" class="px-6 py-14 text-center text-slate-500">
+              <td colspan="10" class="px-6 py-14 text-center text-slate-500">
                 暂无交易记录
               </td>
             </tr>
@@ -1923,7 +1935,17 @@ onUnmounted(() => {
                     getTransactionAmountClass(transaction.type)
                   ]"
                 >
-                  {{ getTransactionAmountPrefix(transaction.type) }}￥{{ formatAmount(transaction.amount) }}
+                  ￥{{ formatAmount(transaction.amount) }}
+                </span>
+              </td>
+              <td class="px-5 py-4 whitespace-nowrap">
+                <span
+                  :class="[
+                    'text-sm font-semibold',
+                    getBalanceDeltaClass(transaction.balanceDelta)
+                  ]"
+                >
+                  {{ formatSignedAmount(transaction.balanceDelta) }}
                 </span>
               </td>
               <td class="px-5 py-4 whitespace-nowrap text-sm text-slate-500">
@@ -2028,7 +2050,10 @@ onUnmounted(() => {
                     getTransactionAmountClass(transaction.type)
                   ]"
                 >
-                  {{ getTransactionAmountPrefix(transaction.type) }}￥{{ formatAmount(transaction.amount) }}
+                  ￥{{ formatAmount(transaction.amount) }}
+                </p>
+                <p :class="['text-xs font-medium', getBalanceDeltaClass(transaction.balanceDelta)]">
+                  余额变动：{{ formatSignedAmount(transaction.balanceDelta) }}
                 </p>
                 <p class="text-xs text-slate-500">
                   赠送：{{ transaction.bonusAmount > 0 ? `+￥${formatAmount(transaction.bonusAmount)}` : '-' }}
@@ -3000,14 +3025,20 @@ onUnmounted(() => {
                 <p class="text-gray-900">{{ getCustomerWechat(selectedTransaction) }}</p>
               </div>
               <div>
-                <label class="text-sm text-gray-500">金额</label>
+                <label class="text-sm text-gray-500">交易金额</label>
                 <p
                   :class="[
                     'font-medium',
                     getTransactionAmountClass(selectedTransaction.type)
                   ]"
                 >
-                  {{ getTransactionAmountPrefix(selectedTransaction.type) }}￥{{ formatAmount(selectedTransaction.amount) }}
+                  ￥{{ formatAmount(selectedTransaction.amount) }}
+                </p>
+              </div>
+              <div>
+                <label class="text-sm text-gray-500">余额变动</label>
+                <p :class="['font-medium', getBalanceDeltaClass(selectedTransaction.balanceDelta)]">
+                  {{ formatSignedAmount(selectedTransaction.balanceDelta) }}
                 </p>
               </div>
               <div>
