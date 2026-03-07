@@ -4,7 +4,9 @@ import sys
 from pathlib import Path
 from .models import db, User
 from sqlalchemy import inspect, text
+from sqlalchemy.exc import IntegrityError
 from .models import BeadMaterial, BeadInventoryBalance
+from utils.roles import ADMIN_ROLE, BUILTIN_ADMIN_USERNAME, BUILTIN_SUPER_ADMIN_USERNAME, SUPER_ADMIN_ROLE
 
 
 def init_db(app):
@@ -17,6 +19,7 @@ def init_db(app):
         ensure_log_columns()
         ensure_builtin_mard_materials()
         create_default_admin()
+        create_builtin_super_admin()
 
 
 def ensure_customer_columns():
@@ -74,7 +77,7 @@ def ensure_transaction_columns():
 
 
 def create_default_admin():
-    existing_admin = User.query.filter_by(username='admin').first()
+    existing_admin = User.query.filter_by(username=BUILTIN_ADMIN_USERNAME).first()
     if existing_admin:
         return
 
@@ -82,14 +85,49 @@ def create_default_admin():
     password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
     admin = User(
-        username='admin',
+        username=BUILTIN_ADMIN_USERNAME,
         password_hash=password_hash,
-        role='admin'
+        role=ADMIN_ROLE
     )
 
     db.session.add(admin)
     db.session.commit()
-    print('Default admin user created: username=admin, password=admin123')
+    print(f'Default admin user created: username={BUILTIN_ADMIN_USERNAME}, password=admin123')
+
+
+def create_builtin_super_admin():
+    existing_super_admin = User.query.filter_by(role=SUPER_ADMIN_ROLE).first()
+    if existing_super_admin:
+        return
+
+    existing_username = User.query.filter_by(username=BUILTIN_SUPER_ADMIN_USERNAME).first()
+    if existing_username:
+        print(
+            f'Warning: cannot create builtin super admin because username "{BUILTIN_SUPER_ADMIN_USERNAME}" already exists'
+        )
+        return
+
+    password = 'SuperAdmin123!'
+    password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+    super_admin = User(
+        username=BUILTIN_SUPER_ADMIN_USERNAME,
+        password_hash=password_hash,
+        role=SUPER_ADMIN_ROLE
+    )
+
+    db.session.add(super_admin)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        existing_after_conflict = User.query.filter_by(username=BUILTIN_SUPER_ADMIN_USERNAME).first()
+        if existing_after_conflict:
+            return
+        raise
+    print(
+        f'Builtin super admin created: username={BUILTIN_SUPER_ADMIN_USERNAME}, password={password}'
+    )
 
 
 def ensure_active_timer_columns():

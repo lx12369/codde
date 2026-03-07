@@ -27,6 +27,7 @@ from utils.audit_log import (
 )
 from utils.bead_inventory_service import append_ledger, generate_reference_no, get_or_create_balance
 from utils.decorators import token_required
+from utils.roles import is_super_admin
 from utils.misc_inventory_service import apply_misc_inbound
 from utils.misc_selection_codec import extract_misc_selections
 from utils.response import error_response, success_response
@@ -77,15 +78,15 @@ CANCEL_CONSUMPTION_LOG_PATTERN = re.compile(
 )
 
 
-def _require_admin():
+def _require_super_admin():
     current_user_id = getattr(g, 'current_user_id', None)
     current_user = User.query.get(current_user_id) if current_user_id is not None else None
 
     if not current_user:
         return error_response('用户不存在或未登录', 401)
 
-    if str(current_user.role or '').strip().lower() != 'admin':
-        return error_response('仅管理员可执行该操作', 403)
+    if not is_super_admin(current_user):
+        return error_response('仅超级管理员可执行该操作', 403)
 
     return None
 
@@ -938,7 +939,7 @@ def _build_rollback_meta(log_record):
 @logs_bp.route('', methods=['GET'])
 @token_required
 def get_logs():
-    permission_error = _require_admin()
+    permission_error = _require_super_admin()
     if permission_error:
         return permission_error
 
@@ -1007,7 +1008,7 @@ def get_logs():
 @logs_bp.route('/<int:log_id>/rollback', methods=['POST'])
 @token_required
 def rollback_log(log_id):
-    permission_error = _require_admin()
+    permission_error = _require_super_admin()
     if permission_error:
         return permission_error
 

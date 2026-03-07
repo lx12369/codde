@@ -2,6 +2,7 @@
 import { ref, reactive, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import api from '@/api'
 import { useAuthStore } from '@/stores'
+import { isAdminRole } from '@/utils/roles'
 import { useBackdropClose } from '@/utils/modalBackdrop'
 import TimerConsumeDialog from '@/components/timers/TimerConsumeDialog.vue'
 import {
@@ -128,7 +129,7 @@ const editForm = reactive({
 const addErrors = ref({})
 const editErrors = ref({})
 const settleErrors = ref({})
-const isAdmin = computed(() => String(authStore.user?.role || '').toLowerCase() === 'admin')
+const isAdmin = computed(() => isAdminRole(authStore.user?.role))
 
 const customerMap = computed(() => {
   const map = new Map()

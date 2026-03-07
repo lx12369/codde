@@ -2,9 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { employeeApi } from '@/api'
 import { useAuthStore } from '@/stores'
+import { getRoleLabel, isAdminRole, isSuperAdminRole, normalizeRole } from '@/utils/roles'
 
 const authStore = useAuthStore()
-const isAdmin = computed(() => String(authStore.user?.role || '').toLowerCase() === 'admin')
+const isAdmin = computed(() => isAdminRole(authStore.user?.role))
+const isSuperAdmin = computed(() => isSuperAdminRole(authStore.user?.role))
 
 const employees = ref([])
 const loading = ref(false)
@@ -103,13 +105,17 @@ const formatDateTime = (value) => {
   return parsed.toLocaleString('zh-CN', { hour12: false })
 }
 
-const toRoleLabel = (role) => (String(role || '').toLowerCase() === 'admin' ? '管理员' : '员工')
+const toRoleLabel = (role) => getRoleLabel(role)
 
 const roleBadgeClass = (role) => (
-  String(role || '').toLowerCase() === 'admin'
-    ? 'border-blue-200 bg-blue-50 text-blue-700'
-    : 'border-slate-200 bg-slate-50 text-slate-700'
+  normalizeRole(role) === 'super_admin'
+    ? 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700'
+    : normalizeRole(role) === 'admin'
+      ? 'border-blue-200 bg-blue-50 text-blue-700'
+      : 'border-slate-200 bg-slate-50 text-slate-700'
 )
+
+const isBuiltinSuperAdmin = (user) => normalizeRole(user?.role) === 'super_admin'
 
 function clearFeedbackTimer() {
   if (!feedbackTimer) return
@@ -192,7 +198,7 @@ function openEditDialog(user) {
   if (!ensureAdminAction()) return
   editForm.id = user.id
   editForm.username = user.username || ''
-  editForm.role = String(user.role || 'staff').toLowerCase()
+  editForm.role = normalizeRole(user.role || 'staff')
   showEditDialog.value = true
 }
 
@@ -228,7 +234,7 @@ async function fetchEmployees() {
     employees.value = items.map((item) => ({
       id: item.id,
       username: item.username || '',
-      role: item.role || 'staff',
+      role: normalizeRole(item.role || 'staff'),
       createdAt: item.created_at
     }))
     total.value = Number(pagination.total ?? items.length) || 0
@@ -246,7 +252,7 @@ async function submitCreate() {
 
   const username = String(createForm.username || '').trim()
   const password = String(createForm.password || '')
-  const role = String(createForm.role || '').toLowerCase()
+  const role = normalizeRole(createForm.role || '')
 
   if (!username) {
     showFeedback('error', '请输入用户名')
@@ -283,7 +289,7 @@ async function submitEdit() {
   if (!ensureAdminAction()) return
 
   const username = String(editForm.username || '').trim()
-  const role = String(editForm.role || '').toLowerCase()
+  const role = normalizeRole(editForm.role || '')
 
   if (!username) {
     showFeedback('error', '用户名不能为空')
@@ -403,7 +409,7 @@ onBeforeUnmount(() => {
           <p class="page-hero__eyebrow">People Workspace</p>
           <h1 class="page-hero__title">员工管理</h1>
           <p class="page-hero__meta">
-            当前账号：{{ authStore.user?.username || '-' }}（{{ isAdmin ? '管理员' : '员工' }}）
+            当前账号：{{ authStore.user?.username || '-' }}（{{ toRoleLabel(authStore.user?.role) }}）
           </p>
         </div>
         <button
@@ -424,6 +430,12 @@ onBeforeUnmount(() => {
       class="employee-access-note rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800"
     >
       当前账号为员工，只允许查看员工列表，不能新增、编辑、重置密码或删除账号。
+    </section>
+    <section
+      v-else-if="!isSuperAdmin"
+      class="employee-access-note rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800"
+    >
+      超级管理员账号不会在当前列表中显示，系统日志页面也仅对超级管理员开放。
     </section>
 
     <Transition name="notice">
@@ -537,21 +549,21 @@ onBeforeUnmount(() => {
                 <div class="flex flex-wrap justify-end gap-2">
                   <button
                     class="table-action table-action--edit inline-flex min-h-[34px] items-center rounded-lg px-3 text-xs font-medium text-blue-700 transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
-                    :disabled="!isAdmin"
+                    :disabled="!isAdmin || isBuiltinSuperAdmin(employee)"
                     @click="openEditDialog(employee)"
                   >
                     编辑
                   </button>
                   <button
                     class="table-action table-action--reset inline-flex min-h-[34px] items-center rounded-lg px-3 text-xs font-medium text-amber-700 transition hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50"
-                    :disabled="!isAdmin"
+                    :disabled="!isAdmin || isBuiltinSuperAdmin(employee)"
                     @click="openResetDialog(employee)"
                   >
                     重置密码
                   </button>
                   <button
                     class="table-action table-action--delete inline-flex min-h-[34px] items-center rounded-lg px-3 text-xs font-medium text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
-                    :disabled="!isAdmin"
+                    :disabled="!isAdmin || isBuiltinSuperAdmin(employee)"
                     @click="openDeleteDialog(employee)"
                   >
                     删除

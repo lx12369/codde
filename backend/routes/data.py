@@ -22,6 +22,7 @@ from models.models import (
 from utils.audit_log import get_operator_name, write_log
 from utils.data_snapshot import BACKUP_SCHEMA_VERSION, export_snapshot_payload, restore_snapshot_payload
 from utils.decorators import token_required
+from utils.roles import is_admin
 from utils.response import error_response, success_response
 
 data_bp = Blueprint('data', __name__)
@@ -117,7 +118,7 @@ def _require_admin():
     if not current_user:
         return error_response('用户不存在或未登录', 401)
 
-    if str(current_user.role or '').strip().lower() != 'admin':
+    if not is_admin(current_user):
         return error_response('仅管理员可执行该操作', 403)
 
     return None

@@ -4,6 +4,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores'
 import { timerApi, authApi } from '@/api'
 import { useBackdropClose } from '@/utils/modalBackdrop'
+import { getRoleLabel, isAdminRole, isSuperAdminRole } from '@/utils/roles'
 
 const router = useRouter()
 const route = useRoute()
@@ -53,10 +54,11 @@ let timerWarningPoller = null
 let timerWarningTicker = null
 let timerWarningRefreshing = false
 const showWarningDebugPanel = ref(false)
-const isAdmin = computed(() => String(authStore.user?.role || '').toLowerCase() === 'admin')
+const isAdmin = computed(() => isAdminRole(authStore.user?.role))
+const isSuperAdmin = computed(() => isSuperAdminRole(authStore.user?.role))
 const currentUserLabel = computed(() => {
   const username = String(authStore.user?.username || '').trim()
-  const roleLabel = isAdmin.value ? '管理员' : '员工'
+  const roleLabel = getRoleLabel(authStore.user?.role)
   return username ? `${username}（${roleLabel}）` : roleLabel
 })
 
@@ -755,13 +757,16 @@ const menuItems = computed(() => {
     },
   ]
 
-  if (isAdmin.value) {
+  if (isSuperAdmin.value) {
     items.push({
       title: '系统日志',
       icon: 'receipt',
       path: '/system-logs',
       group: 'system'
     })
+  }
+
+  if (isAdmin.value) {
     items.push({
       title: '数据管理',
       icon: 'settings',
