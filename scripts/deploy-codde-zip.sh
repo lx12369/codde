@@ -10,8 +10,10 @@ BACKUP_ROOT="/www/backup/codde"
 TIMESTAMP="$(date +%F-%H%M%S)"
 PROJECT_BACKUP="$BACKUP_ROOT/project_$TIMESTAMP"
 INSTANCE_BACKUP="$BACKUP_ROOT/instance_$TIMESTAMP"
+APP_DB_BACKUP="$BACKUP_ROOT/app_db_$TIMESTAMP"
 ENV_BACKUP="$BACKUP_ROOT/env_$TIMESTAMP"
 TMP_INSTANCE="/tmp/${PROJECT_NAME}-instance-keep"
+TMP_APP_DB="/tmp/${PROJECT_NAME}-app.db-keep"
 TMP_ENV="/tmp/${PROJECT_NAME}-env-keep"
 
 echo "[1/7] Checking package"
@@ -29,6 +31,11 @@ if [[ -d "$PROJECT_ROOT/backend/instance" ]]; then
   sudo cp -a "$PROJECT_ROOT/backend/instance" "$INSTANCE_BACKUP"
   sudo rm -rf "$TMP_INSTANCE"
   sudo cp -a "$PROJECT_ROOT/backend/instance" "$TMP_INSTANCE"
+fi
+if [[ -f "$PROJECT_ROOT/backend/app.db" ]]; then
+  sudo cp -a "$PROJECT_ROOT/backend/app.db" "$APP_DB_BACKUP"
+  sudo rm -f "$TMP_APP_DB"
+  sudo cp -a "$PROJECT_ROOT/backend/app.db" "$TMP_APP_DB"
 fi
 if [[ -f "$PROJECT_ROOT/backend/.env" ]]; then
   sudo cp -a "$PROJECT_ROOT/backend/.env" "$ENV_BACKUP"
@@ -60,6 +67,10 @@ if [[ -d "$TMP_INSTANCE" ]]; then
   sudo rm -rf "$PROJECT_ROOT/backend/instance"
   sudo mv "$TMP_INSTANCE" "$PROJECT_ROOT/backend/instance"
 fi
+if [[ -f "$TMP_APP_DB" ]]; then
+  sudo rm -f "$PROJECT_ROOT/backend/app.db"
+  sudo mv "$TMP_APP_DB" "$PROJECT_ROOT/backend/app.db"
+fi
 if [[ -f "$TMP_ENV" ]]; then
   sudo cp -a "$TMP_ENV" "$PROJECT_ROOT/backend/.env"
   sudo rm -f "$TMP_ENV"
@@ -79,6 +90,9 @@ echo "Deploy complete."
 echo "Project backup: $PROJECT_BACKUP"
 if [[ -d "$INSTANCE_BACKUP" ]]; then
   echo "Database backup: $INSTANCE_BACKUP"
+fi
+if [[ -f "$APP_DB_BACKUP" ]]; then
+  echo "Database backup: $APP_DB_BACKUP"
 fi
 if [[ -f "$ENV_BACKUP" ]]; then
   echo "Env backup: $ENV_BACKUP"
