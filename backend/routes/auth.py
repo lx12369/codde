@@ -6,6 +6,7 @@ from utils import (
     generate_token,
     hash_password,
     revoke_token,
+    revoke_user_tokens,
     success_response,
     token_required,
     verify_password
@@ -90,7 +91,12 @@ def change_password():
     )
     db.session.commit()
 
-    return success_response(None, '密码修改成功')
+    current_token = getattr(g, 'current_token', None)
+    if current_token:
+        revoke_token(current_token)
+    revoke_user_tokens(current_user.id)
+
+    return success_response(None, '密码修改成功，请重新登录')
 
 
 @auth_bp.route('/logout', methods=['POST'])

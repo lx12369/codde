@@ -77,11 +77,12 @@ const expenseForm = reactive({
   description: ''
 })
 
-const consumeMode = ref('manual')
+const consumeMode = ref('timer')
 
 const manualConsumeForm = reactive({
   customerId: '',
   amount: '',
+  peopleCount: 1,
   description: '',
   miscSelections: {},
   meituanCustomer: false
@@ -922,10 +923,11 @@ function applyRechargeActivityPreset(activityId) {
 }
 
 function resetConsumeForms(customerId = '') {
-  consumeMode.value = 'manual'
+  consumeMode.value = 'timer'
 
   manualConsumeForm.customerId = customerId
   manualConsumeForm.amount = ''
+  manualConsumeForm.peopleCount = 1
   manualConsumeForm.description = ''
   syncManualMiscSelections({})
   manualConsumeForm.meituanCustomer = false
@@ -1090,7 +1092,9 @@ async function openConsumeDialog(customerId = '') {
   resetConsumeForms(validCustomerId)
   showConsumeDialog.value = true
   await nextTick()
-  manualConsumeCustomerSelectRef.value?.focus()
+  if (consumeMode.value === 'manual') {
+    manualConsumeCustomerSelectRef.value?.focus()
+  }
   await Promise.all([fetchBillingRules(), syncConsumeBalance(validCustomerId)])
 }
 
@@ -1139,6 +1143,10 @@ function validateManualConsumeForm() {
   }
   if (manualRawTotal.value <= 0) {
     errors.amount = '请输入有效金额或杂项数量'
+  }
+  const peopleCount = Number(manualConsumeForm.peopleCount)
+  if (!Number.isFinite(peopleCount) || peopleCount < 1 || !Number.isInteger(peopleCount)) {
+    errors.peopleCount = '请输入大于等于 1 的整数人数'
   }
   if (!manualConsumeForm.description?.trim()) {
     errors.description = '请输入消费描述'
@@ -1290,6 +1298,7 @@ async function submitManualConsume() {
   if (!validateManualConsumeForm()) return
 
   const amount = manualFinalAmount.value
+  const peopleCount = Math.max(1, Math.floor(Number(manualConsumeForm.peopleCount) || 1))
   const miscSelections = createMiscSelectionMap(manualConsumeForm.miscSelections)
 
   const currentBalance = await fetchCustomerBalance(manualConsumeForm.customerId)
@@ -1302,7 +1311,10 @@ async function submitManualConsume() {
     return
   }
 
-  const noteParts = [String(manualConsumeForm.description || '').trim()]
+  const noteParts = [
+    String(manualConsumeForm.description || '').trim(),
+    `人数${peopleCount}人`
+  ]
   if (manualMiscSummary.value.details.length > 0) {
     noteParts.push(`杂项${manualMiscSummary.value.details.join('、')}`)
   }
@@ -2435,6 +2447,24 @@ onUnmounted(() => {
                 </div>
                 <p v-if="manualConsumeErrors.amount" class="text-red-500 text-xs mt-1">
                   {{ manualConsumeErrors.amount }}
+                </p>
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">消费人数</label>
+                <input
+                  v-model.number="manualConsumeForm.peopleCount"
+                  type="number"
+                  min="1"
+                  step="1"
+                  placeholder="请输入人数"
+                  :class="[
+                    'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
+                    manualConsumeErrors.peopleCount ? 'border-red-500' : 'border-gray-300'
+                  ]"
+                />
+                <p v-if="manualConsumeErrors.peopleCount" class="text-red-500 text-xs mt-1">
+                  {{ manualConsumeErrors.peopleCount }}
                 </p>
               </div>
 

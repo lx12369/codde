@@ -872,10 +872,9 @@ const submitPasswordChange = async () => {
       current_password: passwordForm.currentPassword,
       new_password: passwordForm.newPassword
     })
-    passwordSuccess.value = '密码修改成功'
-    passwordForm.currentPassword = ''
-    passwordForm.newPassword = ''
-    passwordForm.confirmPassword = ''
+    authStore.logout()
+    closeChangePasswordModal()
+    router.push('/login')
   } catch (error) {
     console.error('Failed to change password:', error)
     passwordError.value = error.response?.data?.message || '密码修改失败'

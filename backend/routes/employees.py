@@ -1,7 +1,7 @@
 from flask import Blueprint, g, request
 
 from models.models import User, db
-from utils import hash_password
+from utils import hash_password, revoke_user_tokens
 from utils.audit_log import get_operator_name, write_log
 from utils.decorators import token_required
 from utils.response import error_response, paginated_response, success_response
@@ -202,6 +202,7 @@ def reset_employee_password(user_id):
     )
 
     db.session.commit()
+    revoke_user_tokens(target_user.id)
 
     return success_response(target_user.to_dict(), 'Password reset successfully')
 
