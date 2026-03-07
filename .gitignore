@@ -13,6 +13,7 @@ backend/dist/
 backend/instance/*.db
 backend/instance/*.sqlite
 backend/instance/*.sqlite3
+backend/.env
 
 # Frontend dependencies and build outputs
 frontend/node_modules/
