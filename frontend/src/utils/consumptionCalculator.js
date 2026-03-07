@@ -808,6 +808,7 @@ export function calculateConsumptionAmount(options = {}, rawRules = {}) {
 export function buildConsumptionDescription(meta = {}, calcResult = {}, notes = '') {
   const mode = meta.mode || 'auto'
   const billingTypeLabel = getBillingTypeLabel(meta.billingType || calcResult.billingType)
+  const tableLabel = String(meta.tableLabel || '').trim()
   const parts = []
 
   if (mode === 'timer') {
@@ -818,6 +819,10 @@ export function buildConsumptionDescription(meta = {}, calcResult = {}, notes = 
     parts.push(`${hours}小时${minutes}分钟`)
   } else {
     parts.push(`自动结算(${billingTypeLabel})`)
+  }
+
+  if (tableLabel) {
+    parts.push(`桌号: ${tableLabel}`)
   }
 
   const detailParts = calcResult.details || []

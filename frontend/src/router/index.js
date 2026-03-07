@@ -38,7 +38,14 @@ const router = createRouter({
         {
           path: 'transactions',
           name: 'transactions',
-          component: () => import('@/views/Transactions.vue')
+          component: () => import('@/views/Transactions.vue'),
+          meta: { transactionScope: 'active' }
+        },
+        {
+          path: 'expired-transactions',
+          name: 'expired-transactions',
+          component: () => import('@/views/Transactions.vue'),
+          meta: { requiresSuperAdmin: true, transactionScope: 'expired' }
         },
         {
           path: 'activities',

@@ -74,6 +74,7 @@ def get_stats():
 
     today_transactions = Transaction.query.filter(
         Transaction.type == 'recharge',
+        db.or_(Transaction.status.is_(None), Transaction.status != 'expired'),
         Transaction.transaction_time >= today_start,
         Transaction.transaction_time < tomorrow_start
     ).count()
@@ -82,6 +83,7 @@ def get_stats():
         func.coalesce(func.sum(Transaction.amount), 0)
     ).filter(
         Transaction.type == 'recharge',
+        db.or_(Transaction.status.is_(None), Transaction.status != 'expired'),
         Transaction.transaction_time >= today_start,
         Transaction.transaction_time < tomorrow_start
     ).scalar()
@@ -89,6 +91,7 @@ def get_stats():
 
     today_consumptions = Transaction.query.filter(
         Transaction.type == 'consumption',
+        db.or_(Transaction.status.is_(None), Transaction.status != 'expired'),
         Transaction.transaction_time >= today_start,
         Transaction.transaction_time < tomorrow_start
     ).count()
@@ -97,6 +100,7 @@ def get_stats():
         func.coalesce(func.sum(Transaction.amount), 0)
     ).filter(
         Transaction.type == 'consumption',
+        db.or_(Transaction.status.is_(None), Transaction.status != 'expired'),
         Transaction.transaction_time >= today_start,
         Transaction.transaction_time < tomorrow_start
     ).scalar()
@@ -108,7 +112,7 @@ def get_stats():
         Transaction.type.in_(['expense', 'bead_purchase']),
         Transaction.transaction_time >= today_start,
         Transaction.transaction_time < tomorrow_start,
-        db.or_(Transaction.status.is_(None), Transaction.status != 'cancelled')
+        db.or_(Transaction.status.is_(None), db.not_(Transaction.status.in_(['cancelled', 'expired'])))
     ).scalar()
     today_expense_amount = float(today_expense_amount_result) if today_expense_amount_result else 0.0
 
@@ -133,6 +137,7 @@ def get_stats():
 
     today_consumption_records = Transaction.query.with_entities(Transaction.description).filter(
         Transaction.type == 'consumption',
+        db.or_(Transaction.status.is_(None), Transaction.status != 'expired'),
         Transaction.transaction_time >= today_start,
         Transaction.transaction_time < tomorrow_start
     ).all()
@@ -141,7 +146,9 @@ def get_stats():
         for row in today_consumption_records
     )
 
-    total_transactions = Transaction.query.count()
+    total_transactions = Transaction.query.filter(
+        db.or_(Transaction.status.is_(None), Transaction.status != 'expired')
+    ).count()
 
     active_timers_count = ActiveTimer.query.filter_by(status='active').count()
 

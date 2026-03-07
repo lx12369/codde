@@ -15,6 +15,8 @@
 - `backend/instance`
 - `.git`
 
+其中 `backend/.env` 不只是数据库配置，也包含天气服务配置。只要继续保留这个文件，服务器就不会因为代码更新而丢失 MySQL 连接或天气来源设置。
+
 ## 一、更新前提
 
 服务器上需要有这两个脚本：
@@ -123,6 +125,24 @@ curl -s -H 'Host: 47.112.117.203' http://127.0.0.1/api/data/storage-info
 - `/api/data/storage-info` 未登录时返回 `401`
 - 返回 `401` 说明请求已经进入 Flask，而不是落到默认站点
 
+### 5. 验证天气来源
+
+服务器当前天气应与本地保持一致，统一使用 `.env` 中的天气配置。
+
+执行：
+
+```bash
+cd /www/wwwroot/codde/backend
+grep -n "AMAP_WEATHER" .env
+./.venv/bin/python -c "from app import create_app; app=create_app('production'); print(app.config['AMAP_WEATHER_KEY'], app.config['AMAP_WEATHER_LOCATION'], app.config['AMAP_WEATHER_CITY_LABEL'])"
+```
+
+预期：
+
+- `.env` 中能看到 `AMAP_WEATHER_KEY`
+- 输出的位置为 `宁波市鄞州区下应街道`
+- 如果没有 `AMAP_WEATHER_KEY`，后端会自动回退到 `Open-Meteo`，这会导致服务器与本地天气显示不一致
+
 ## 四、当前线上运行方式
 
 当前线上后端启动方式：
@@ -147,6 +167,7 @@ curl -s -H 'Host: 47.112.117.203' http://127.0.0.1/api/data/storage-info
 - 不要重新安装 LNMP/LAMP 套件
 - 不要在宝塔里重新创建一个空站点覆盖当前目录
 - 不要在宝塔数据库页点击“安装Mysql环境”来替代当前 MariaDB
+- 不要手动清空 `backend/.env` 中的天气配置，否则天气会从高德回退为 `Open-Meteo`
 
 ## 六、出问题时回滚
 

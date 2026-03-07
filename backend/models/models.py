@@ -202,6 +202,23 @@ class BillingRule(db.Model):
         }
 
 
+class SeatLayoutConfig(db.Model):
+    __tablename__ = 'seat_layout_configs'
+
+    id = db.Column(db.Integer, primary_key=True)
+    config_key = db.Column(db.String(50), unique=True, nullable=False)
+    config_data = db.Column(db.JSON)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'config_key': self.config_key,
+            'config_data': self.config_data,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+        }
+
+
 class ActiveTimer(db.Model):
     __tablename__ = 'active_timers'
 

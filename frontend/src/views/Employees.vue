@@ -2,11 +2,10 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { employeeApi } from '@/api'
 import { useAuthStore } from '@/stores'
-import { getRoleLabel, isAdminRole, isSuperAdminRole, normalizeRole } from '@/utils/roles'
+import { getRoleLabel, isAdminRole, normalizeRole } from '@/utils/roles'
 
 const authStore = useAuthStore()
 const isAdmin = computed(() => isAdminRole(authStore.user?.role))
-const isSuperAdmin = computed(() => isSuperAdminRole(authStore.user?.role))
 
 const employees = ref([])
 const loading = ref(false)
@@ -451,12 +450,6 @@ onBeforeUnmount(() => {
       class="employee-access-note rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800"
     >
       当前账号为员工，只允许查看员工列表，不能新增、编辑、重置密码或删除账号。
-    </section>
-    <section
-      v-else-if="!isSuperAdmin"
-      class="employee-access-note rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800"
-    >
-      超级管理员账号不会在当前列表中显示，系统日志页面也仅对超级管理员开放。
     </section>
 
     <Transition name="notice">

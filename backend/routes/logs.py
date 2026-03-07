@@ -355,7 +355,7 @@ def _find_target_transaction_for_log(log_record, context):
         .filter(Transaction.customer_id == customer_id)
         .filter(Transaction.amount >= amount - AMOUNT_TOLERANCE)
         .filter(Transaction.amount <= amount + AMOUNT_TOLERANCE)
-        .filter(db.or_(Transaction.status.is_(None), Transaction.status != 'cancelled'))
+        .filter(db.or_(Transaction.status.is_(None), db.not_(Transaction.status.in_(['cancelled', 'expired']))))
     )
 
     if tx_type == 'recharge':

@@ -4,12 +4,10 @@ import {
   timerTypeOptions,
   getTimerPackagePlanOptions,
   getDefaultTimerPackagePlan,
-  TABLE_AREA_OPTIONS,
-  TABLE_SEAT_OPTIONS,
-  buildTableNo,
   getRequiredExtraSeatCount,
   getTimerConsumeSeatPayload
 } from '@/utils/timerConsume'
+import { getSeatOptionList } from '@/utils/seatLayout'
 
 const props = defineProps({
   modelValue: {
@@ -31,6 +29,10 @@ const props = defineProps({
   billingRules: {
     type: Object,
     default: () => ({})
+  },
+  seatLayoutConfig: {
+    type: Object,
+    default: () => ({})
   }
 })
 
@@ -38,11 +40,10 @@ const emit = defineEmits(['update:modelValue'])
 const customerSelectRef = ref(null)
 
 const packagePlanOptions = computed(() => getTimerPackagePlanOptions(props.modelValue?.timerType, props.billingRules))
-const tableAreaOptions = TABLE_AREA_OPTIONS
-const tableSeatOptions = TABLE_SEAT_OPTIONS
+const seatOptions = computed(() => getSeatOptionList(props.seatLayoutConfig))
 const requiredExtraSeatCount = computed(() => getRequiredExtraSeatCount(props.modelValue?.packagePlan, props.billingRules))
 const showExtraSeats = computed(() => requiredExtraSeatCount.value > 0)
-const extraSeatSelections = computed(() => getTimerConsumeSeatPayload(props.modelValue, props.billingRules).extraTableSelections)
+const extraSeatSelections = computed(() => getTimerConsumeSeatPayload(props.modelValue, props.billingRules, props.seatLayoutConfig).extraTableSelections)
 const hasMiscItems = computed(() => props.enabledMiscItems.length > 0)
 
 function patchForm(patch = {}) {
@@ -52,13 +53,17 @@ function patchForm(patch = {}) {
   })
 }
 
-function patchTableNo(nextArea, nextSeat) {
-  const tableArea = String(nextArea || '').trim().toUpperCase()
-  const tableSeat = String(nextSeat || '').trim()
+function findSeatOption(tableNo = '') {
+  return seatOptions.value.find((item) => item.tableNo === String(tableNo || '').trim()) || null
+}
+
+function patchPrimarySeat(tableNo) {
+  const selected = findSeatOption(tableNo) || seatOptions.value[0] || null
+  if (!selected) return
   patchForm({
-    tableArea,
-    tableSeat,
-    tableNo: buildTableNo(tableArea, tableSeat)
+    tableArea: selected.tableArea,
+    tableSeat: selected.tableSeat,
+    tableNo: selected.tableNo
   })
 }
 
@@ -68,13 +73,15 @@ function getFirstExtraSeatLegacyPatch(nextSelections = null) {
       ...props.modelValue,
       extraTableSelections: nextSelections ?? props.modelValue?.extraTableSelections
     },
-    props.billingRules
+    props.billingRules,
+    props.seatLayoutConfig
   )
   const first = seatPayload.extraTableSelections[0] || {}
+  const defaultSeat = seatOptions.value[0] || {}
   return {
     extraTableSelections: seatPayload.extraTableSelections,
     extraTableNos: seatPayload.extraTableNos,
-    secondTableArea: first.tableArea || props.modelValue?.tableArea || TABLE_AREA_OPTIONS[0],
+    secondTableArea: first.tableArea || props.modelValue?.tableArea || defaultSeat.tableArea || '',
     secondTableSeat: first.tableSeat || '',
     secondTableNo: seatPayload.secondTableNo
   }
@@ -95,26 +102,15 @@ function patchExtraSelections(nextSelections) {
   patchForm(getFirstExtraSeatLegacyPatch(nextSelections))
 }
 
-function updateExtraSeatArea(index, value) {
+function updateExtraSeat(index, tableNo) {
   const list = extraSeatSelections.value.map((item) => ({ ...item }))
   if (!list[index]) return
-  const area = String(value || '').trim().toUpperCase()
+  const selected = findSeatOption(tableNo)
   list[index] = {
     ...list[index],
-    tableArea: area,
-    tableNo: buildTableNo(area, list[index].tableSeat)
-  }
-  patchExtraSelections(list)
-}
-
-function updateExtraSeatSeat(index, value) {
-  const list = extraSeatSelections.value.map((item) => ({ ...item }))
-  if (!list[index]) return
-  const seat = String(value || '').trim()
-  list[index] = {
-    ...list[index],
-    tableSeat: seat,
-    tableNo: buildTableNo(list[index].tableArea, seat)
+    tableArea: selected?.tableArea || '',
+    tableSeat: selected?.tableSeat || '',
+    tableNo: selected?.tableNo || ''
   }
   patchExtraSelections(list)
 }
@@ -323,32 +319,18 @@ defineExpose({
 
     <div>
       <label class="block text-sm font-medium text-gray-700 mb-1">第1座位</label>
-      <div class="grid grid-cols-2 gap-3">
-        <select
-          :value="modelValue.tableArea"
-          :class="[
-            'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-            errors.tableNo ? 'border-red-500' : 'border-gray-300'
-          ]"
-          @change="patchTableNo($event.target.value, modelValue.tableSeat)"
-        >
-          <option v-for="area in tableAreaOptions" :key="area" :value="area">
-            {{ area }}桌
-          </option>
-        </select>
-        <select
-          :value="modelValue.tableSeat"
-          :class="[
-            'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-            errors.tableNo ? 'border-red-500' : 'border-gray-300'
-          ]"
-          @change="patchTableNo(modelValue.tableArea, $event.target.value)"
-        >
-          <option v-for="seat in tableSeatOptions" :key="seat" :value="seat">
-            {{ seat }}号
-          </option>
-        </select>
-      </div>
+      <select
+        :value="modelValue.tableNo"
+        :class="[
+          'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
+          errors.tableNo ? 'border-red-500' : 'border-gray-300'
+        ]"
+        @change="patchPrimarySeat($event.target.value)"
+      >
+        <option v-for="seat in seatOptions" :key="seat.slotKey" :value="seat.tableNo">
+          {{ seat.label }}
+        </option>
+      </select>
       <p v-if="errors.tableNo" class="text-red-500 text-xs mt-1">
         {{ errors.tableNo }}
       </p>
@@ -360,33 +342,19 @@ defineExpose({
       </div>
       <div v-for="(seat, index) in extraSeatSelections" :key="`extra-seat-${index}`">
         <label class="block text-sm font-medium text-gray-700 mb-1">第{{ index + 2 }}座位</label>
-        <div class="grid grid-cols-2 gap-3">
-          <select
-            :value="seat.tableArea || modelValue.tableArea"
-            :class="[
-              'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-              getExtraSeatError(index) ? 'border-red-500' : 'border-gray-300'
-            ]"
-            @change="updateExtraSeatArea(index, $event.target.value)"
-          >
-            <option v-for="area in tableAreaOptions" :key="`extra-area-${index}-${area}`" :value="area">
-              {{ area }}桌
-            </option>
-          </select>
-          <select
-            :value="seat.tableSeat"
-            :class="[
-              'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-              getExtraSeatError(index) ? 'border-red-500' : 'border-gray-300'
-            ]"
-            @change="updateExtraSeatSeat(index, $event.target.value)"
-          >
-            <option value="">请选择号位</option>
-            <option v-for="seatNo in tableSeatOptions" :key="`extra-seat-${index}-${seatNo}`" :value="seatNo">
-              {{ seatNo }}号
-            </option>
-          </select>
-        </div>
+        <select
+          :value="seat.tableNo"
+          :class="[
+            'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
+            getExtraSeatError(index) ? 'border-red-500' : 'border-gray-300'
+          ]"
+          @change="updateExtraSeat(index, $event.target.value)"
+        >
+          <option value="">请选择座位</option>
+          <option v-for="option in seatOptions" :key="`extra-seat-${index}-${option.slotKey}`" :value="option.tableNo">
+            {{ option.label }}
+          </option>
+        </select>
         <p v-if="getExtraSeatError(index)" class="text-red-500 text-xs mt-1">
           {{ getExtraSeatError(index) }}
         </p>

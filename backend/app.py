@@ -46,6 +46,7 @@ def register_routes(app):
     from routes.transactions import transactions_bp
     from routes.activities import activities_bp
     from routes.billing import billing_bp
+    from routes.seat_layout_config import seat_layout_config_bp
     from routes.active_timers import active_timers_bp
     from routes.dashboard import dashboard_bp
     from routes.data import data_bp
@@ -58,6 +59,7 @@ def register_routes(app):
     app.register_blueprint(transactions_bp, url_prefix='/api/transactions')
     app.register_blueprint(activities_bp, url_prefix='/api/activities')
     app.register_blueprint(billing_bp, url_prefix='/api')
+    app.register_blueprint(seat_layout_config_bp, url_prefix='/api/seat-layout-config')
     app.register_blueprint(active_timers_bp, url_prefix='/api/active-timers')
     app.register_blueprint(dashboard_bp, url_prefix='/api/dashboard')
     app.register_blueprint(data_bp, url_prefix='/api/data')

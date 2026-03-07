@@ -38,7 +38,7 @@ const WARNING_STORAGE_KEY = 'active_timer_warning_v1'
 const WARNING_LEAD_STORAGE_KEY = 'timer_warning_lead_seconds_v1'
 const LEGACY_WARNING_LEAD_STORAGE_KEY = 'timer_warning_lead_minutes_v1'
 const DEFAULT_WARNING_LEAD_SECONDS = 600
-const TABLE_NO_PATTERN = /^([A-HJ-NP-Za-hj-np-z])桌([1-9]|1[0-9]|20)号$/
+const TABLE_NO_PATTERN = /^([A-HJ-NP-Za-hj-np-z])桌([1-9]|[1-9][0-9]|100)号$/
 const PACKAGE_TOTAL_MINUTES = {
   limited1h: 60,
   limited2h: 120
@@ -73,7 +73,7 @@ function toSeatCode(rawTableNo) {
   const normalized = normalizeTableNo(rawTableNo)
   const matched = TABLE_NO_PATTERN.exec(normalized)
   if (!matched) return ''
-  return `${matched[1].toLowerCase()}${matched[2]}`
+  return `${matched[2]}`
 }
 
 function getTimerExtraTableNos(timer) {
@@ -731,6 +731,14 @@ const menuItems = computed(() => {
       path: '/transactions',
       group: 'operation'
     },
+    ...(isSuperAdmin.value
+      ? [{
+        title: '过期交易',
+        icon: 'receipt',
+        path: '/expired-transactions',
+        group: 'operation'
+      }]
+      : []),
     {
       title: '活动管理',
       icon: 'calendar',

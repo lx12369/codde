@@ -1,17 +1,23 @@
 import time
-import re
 import json
 from datetime import datetime
 from flask import Blueprint, request
-from models.models import db, ActiveTimer, Customer, Balance, Transaction
+from models.models import db, ActiveTimer, Customer, Balance, Transaction, SeatLayoutConfig
 from utils.audit_log import get_operator_name, write_log
 from utils.decorators import token_required
 from utils.misc_inventory_service import normalize_misc_selections, apply_misc_outbound
 from utils.misc_selection_codec import compose_description_with_misc
 from utils.response import success_response, error_response
+from utils.seat_layout import (
+    SEAT_LAYOUT_CONFIG_KEY,
+    extract_extra_table_nos_from_notes,
+    get_allowed_table_no_set,
+    is_valid_table_no,
+    normalize_seat_layout_config,
+    normalize_table_no,
+)
 
 active_timers_bp = Blueprint('active_timers', __name__)
-TABLE_NO_PATTERN = re.compile(r'^([A-HJ-NP-Za-hj-np-z])桌([1-9]|1[0-9]|20)号$')
 
 
 def _to_float(value, default=None):
@@ -38,32 +44,70 @@ def _generate_transaction_id():
 
 
 def _normalize_table_no(value):
-    raw = str(value or '').strip()
-    matched = TABLE_NO_PATTERN.match(raw)
-    if not matched:
-        return raw
-    area = matched.group(1).upper()
-    seat = matched.group(2)
-    return f'{area}桌{seat}号'
+    return normalize_table_no(value)
 
 
-def _validate_table_no(table_no, exclude_timer_id=None):
+def _get_active_timer_occupied_seat_map(exclude_timer_id=None):
+    occupied = {}
+    timers = ActiveTimer.query.filter(
+        ActiveTimer.status.in_(['active', 'paused'])
+    ).all()
+
+    for timer in timers:
+        if exclude_timer_id and timer.id == exclude_timer_id:
+            continue
+
+        primary_table_no = _normalize_table_no(timer.table_no)
+        if is_valid_table_no(primary_table_no) and primary_table_no not in occupied:
+            occupied[primary_table_no] = timer.id
+
+        for table_no in extract_extra_table_nos_from_notes(timer.notes):
+            if table_no not in occupied:
+                occupied[table_no] = timer.id
+
+    return occupied
+
+
+def _get_effective_seat_layout_config():
+    record = SeatLayoutConfig.query.filter_by(config_key=SEAT_LAYOUT_CONFIG_KEY).first()
+    return normalize_seat_layout_config(record.config_data if record else None, strict=False)
+
+
+def _validate_table_no(table_no, occupied_map=None, allowed_table_nos=None):
     if not table_no:
         return '桌号不能为空'
 
-    if not TABLE_NO_PATTERN.match(table_no):
-        return '桌号必须在 A-H/J-N/P-Z 桌、1-20号范围内'
+    if not is_valid_table_no(table_no):
+        return '桌号必须在 A-H/J-N/P-Z 桌、1-100号范围内'
 
-    query = ActiveTimer.query.filter(
-        ActiveTimer.status.in_(['active', 'paused']),
-        ActiveTimer.table_no == table_no
-    )
-    if exclude_timer_id:
-        query = query.filter(ActiveTimer.id != exclude_timer_id)
+    normalized_table_no = _normalize_table_no(table_no)
+    if allowed_table_nos is not None and normalized_table_no not in allowed_table_nos:
+        return f'桌号未配置：{normalized_table_no}'
 
-    if query.first():
+    if occupied_map is not None and normalized_table_no in occupied_map:
         return f'桌号已占用：{table_no}'
 
+    return None
+
+
+def _validate_extra_table_nos(raw_notes, primary_table_no, occupied_map, allowed_table_nos):
+    seen = set()
+    normalized_primary_table_no = _normalize_table_no(primary_table_no)
+    if is_valid_table_no(normalized_primary_table_no):
+        seen.add(normalized_primary_table_no)
+
+    extra_table_nos = extract_extra_table_nos_from_notes(raw_notes)
+    for index, table_no in enumerate(extra_table_nos):
+        seat_label = f'第{index + 2}座位'
+        if not is_valid_table_no(table_no):
+            return f'{seat_label}格式不正确'
+        if table_no not in allowed_table_nos:
+            return f'{seat_label}未配置：{table_no}'
+        if table_no in seen:
+            return f'{seat_label}不能与已选座位重复'
+        if table_no in occupied_map:
+            return f'{seat_label}已占用：{table_no}'
+        seen.add(table_no)
     return None
 
 
@@ -105,9 +149,17 @@ def create_active_timer():
     if not customer or customer.is_deleted:
         return error_response('Customer not found', 404)
 
-    table_no_error = _validate_table_no(table_no)
+    seat_layout_config = _get_effective_seat_layout_config()
+    allowed_table_nos = get_allowed_table_no_set(seat_layout_config)
+    occupied_map = _get_active_timer_occupied_seat_map()
+
+    table_no_error = _validate_table_no(table_no, occupied_map=occupied_map, allowed_table_nos=allowed_table_nos)
     if table_no_error:
         return error_response(table_no_error, 400)
+
+    extra_table_no_error = _validate_extra_table_nos(notes, table_no, occupied_map, allowed_table_nos)
+    if extra_table_no_error:
+        return error_response(extra_table_no_error, 400)
 
     timer_id = f'TM{time.time_ns()}'
 
@@ -161,29 +213,53 @@ def update_active_timer(timer_id):
     status = data.get('status')
     has_table_no = 'table_no' in data or 'tableNo' in data
     table_no = _normalize_table_no(data.get('table_no', data.get('tableNo')))
+    next_timer_type = timer.timer_type
+    next_notes = timer.notes
+    next_status = timer.status
+    next_table_no = timer.table_no
 
     if timer_type is not None:
         timer_type = str(timer_type).strip()
         valid_timer_types = ['limited', 'weekday', 'weekend']
         if timer_type not in valid_timer_types:
             return error_response(f'Invalid timer_type. Must be one of: {", ".join(valid_timer_types)}', 400)
-        timer.timer_type = timer_type
+        next_timer_type = timer_type
 
     if notes is not None:
         notes = str(notes).strip()
-        timer.notes = notes if notes else None
+        next_notes = notes if notes else None
 
     if status is not None:
         valid_statuses = ['active', 'paused', 'completed']
         if status not in valid_statuses:
             return error_response(f'Invalid status. Must be one of: {", ".join(valid_statuses)}', 400)
-        timer.status = status
+        next_status = status
 
     if has_table_no:
-        table_no_error = _validate_table_no(table_no, exclude_timer_id=timer.id)
+        next_table_no = table_no
+
+    if has_table_no or notes is not None:
+        seat_layout_config = _get_effective_seat_layout_config()
+        allowed_table_nos = get_allowed_table_no_set(seat_layout_config)
+        occupied_map = _get_active_timer_occupied_seat_map(exclude_timer_id=timer.id)
+    else:
+        allowed_table_nos = None
+        occupied_map = None
+
+    if has_table_no:
+        table_no_error = _validate_table_no(next_table_no, occupied_map=occupied_map, allowed_table_nos=allowed_table_nos)
         if table_no_error:
             return error_response(table_no_error, 400)
-        timer.table_no = table_no
+
+    if notes is not None or has_table_no:
+        extra_table_no_error = _validate_extra_table_nos(next_notes, next_table_no, occupied_map, allowed_table_nos)
+        if extra_table_no_error:
+            return error_response(extra_table_no_error, 400)
+
+    timer.timer_type = next_timer_type
+    timer.notes = next_notes
+    timer.status = next_status
+    timer.table_no = next_table_no
 
     changes = []
     if before_timer_type != timer.timer_type:
