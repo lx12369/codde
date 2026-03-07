@@ -97,11 +97,29 @@ def ensure_active_timer_columns():
     if 'active_timers' not in inspector.get_table_names():
         return
 
-    existing_columns = {column['name'] for column in inspector.get_columns('active_timers')}
+    backend_name = db.engine.url.get_backend_name()
+    columns = inspector.get_columns('active_timers')
+    existing_columns = {column['name'] for column in columns}
+    column_map = {column['name']: column for column in columns}
     alter_statements = []
 
     if 'table_no' not in existing_columns:
         alter_statements.append('ALTER TABLE active_timers ADD COLUMN table_no VARCHAR(30)')
+
+    id_column = column_map.get('id')
+    if backend_name == 'mysql' and id_column is not None:
+        try:
+            id_length = int(getattr(id_column.get('type'), 'length', 0) or 0)
+        except (TypeError, ValueError):
+            id_length = 0
+        if id_length < 32:
+            alter_statements.append('ALTER TABLE active_timers MODIFY COLUMN id VARCHAR(32) NOT NULL')
+
+    notes_column = column_map.get('notes')
+    if backend_name == 'mysql' and notes_column is not None:
+        notes_type = str(notes_column.get('type') or '').lower()
+        if 'text' not in notes_type:
+            alter_statements.append('ALTER TABLE active_timers MODIFY COLUMN notes TEXT')
 
     if not alter_statements:
         return

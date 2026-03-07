@@ -203,12 +203,12 @@ class BillingRule(db.Model):
 class ActiveTimer(db.Model):
     __tablename__ = 'active_timers'
 
-    id = db.Column(db.String(20), primary_key=True)
+    id = db.Column(db.String(32), primary_key=True)
     customer_id = db.Column(db.String(10), db.ForeignKey('customers.id'), nullable=False)
     table_no = db.Column(db.String(30))
     start_time = db.Column(db.DateTime, nullable=False)
     timer_type = db.Column(db.String(50))
-    notes = db.Column(db.String(255))
+    notes = db.Column(db.Text)
     status = db.Column(db.String(20), default='active')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
