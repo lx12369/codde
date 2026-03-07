@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from flask import Blueprint, g, request
+from sqlalchemy import text
 
 from models.models import (
     db,
@@ -65,6 +66,20 @@ def _build_storage_info():
                     data_size_bytes = db_path.stat().st_size
                 except OSError:
                     data_size_bytes = None
+    elif backend_name == 'mysql' and database:
+        storage_location = database
+        try:
+            result = db.session.execute(
+                text(
+                    'SELECT COALESCE(SUM(data_length + index_length), 0) '
+                    'FROM information_schema.tables '
+                    'WHERE table_schema = :database_name'
+                ),
+                {'database_name': database}
+            )
+            data_size_bytes = int(result.scalar() or 0)
+        except Exception:
+            data_size_bytes = None
     elif database:
         storage_location = database
     elif engine_url_str:

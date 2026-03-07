@@ -3,8 +3,9 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import api from '@/api'
 
 const dataStatus = reactive({
+  engine: '',
   storageLocation: '',
-  dataSize: '0 KB',
+  dataSize: '未知',
   userCount: 0,
   revokedTokenCount: 0,
   customerCount: 0,
@@ -57,7 +58,8 @@ const safeCount = (value) => {
 
 const formatFileSize = (bytes) => {
   const size = Number(bytes)
-  if (!Number.isFinite(size) || size <= 0) return '0 KB'
+  if (!Number.isFinite(size) || size < 0) return '未知'
+  if (size === 0) return '0 KB'
 
   if (size < 1024) return `${size} B`
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(2)} KB`
@@ -66,20 +68,21 @@ const formatFileSize = (bytes) => {
 }
 
 const formatNumber = (num) => safeCount(num).toLocaleString()
+const isMysqlStorage = computed(() => String(dataStatus.engine || '').toLowerCase() === 'mysql')
 
 const overviewCards = computed(() => ([
   {
     key: 'storageLocation',
     label: '存储位置',
-    value: dataStatus.storageLocation || '本地数据库（路径未知）',
-    helper: '当前数据库文件路径',
+    value: dataStatus.storageLocation || (isMysqlStorage.value ? '数据库名称未知' : '数据库位置未知'),
+    helper: isMysqlStorage.value ? '当前连接的 MySQL 数据库名' : '当前数据库文件路径',
     tone: 'slate'
   },
   {
     key: 'dataSize',
     label: '数据大小',
     value: dataStatus.dataSize,
-    helper: '用于评估备份体量',
+    helper: isMysqlStorage.value ? '当前 MySQL 数据库占用空间' : '用于评估备份体量',
     tone: 'amber'
   },
   {
@@ -133,9 +136,9 @@ const overviewCards = computed(() => ([
   },
   {
     key: 'activeTimerCount',
-    label: '活跃计时',
+    label: '计时记录',
     value: formatNumber(dataStatus.activeTimerCount),
-    helper: '进行中的计时项目',
+    helper: '历史与进行中的计时记录总数',
     tone: 'sky'
   },
   {
@@ -242,8 +245,9 @@ const showFeedback = (tone, message) => {
 }
 
 const resetDataStatus = () => {
-  dataStatus.storageLocation = '本地数据库（路径未知）'
-  dataStatus.dataSize = '0 KB'
+  dataStatus.engine = ''
+  dataStatus.storageLocation = '数据库位置未知'
+  dataStatus.dataSize = '未知'
   dataStatus.userCount = 0
   dataStatus.revokedTokenCount = 0
   dataStatus.customerCount = 0
@@ -265,9 +269,13 @@ const fetchDataStatus = async ({ withFeedback = false } = {}) => {
     const storageResponse = await api.get('/data/storage-info')
     const storageInfo = storageResponse?.data || storageResponse || {}
     const dataCounts = storageInfo.dataCounts || {}
+    const engine = String(storageInfo.engine || '').toLowerCase()
+    const rawDataSizeBytes = storageInfo.dataSizeBytes
+    const hasKnownSize = rawDataSizeBytes !== null && rawDataSizeBytes !== undefined && Number.isFinite(Number(rawDataSizeBytes)) && Number(rawDataSizeBytes) >= 0
 
+    dataStatus.engine = engine
     dataStatus.storageLocation = storageInfo.storageLocation || storageInfo.databaseUri || '本地数据库（路径未知）'
-    dataStatus.dataSize = formatFileSize(storageInfo.dataSizeBytes)
+    dataStatus.dataSize = hasKnownSize ? formatFileSize(rawDataSizeBytes) : (engine === 'mysql' ? '由 MySQL 管理' : '未知')
     dataStatus.userCount = safeCount(dataCounts.users)
     dataStatus.revokedTokenCount = safeCount(dataCounts.revoked_tokens)
     dataStatus.customerCount = safeCount(dataCounts.customers)
