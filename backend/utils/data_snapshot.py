@@ -250,10 +250,19 @@ def restore_snapshot_payload(payload):
                 raise ValueError(f'Invalid item in {table_key}')
 
             values = {}
+            if table_key == 'users':
+                account = record.get('account')
+                username = record.get('username')
+                if account is None and username is not None:
+                    values['account'] = username
+                if username is None and account is not None:
+                    values['username'] = account
             for column in model.__table__.columns:
                 if column.name not in record:
-                    continue
-                values[column.name] = deserialize_value(column, record.get(column.name))
+                    if column.name not in values:
+                        continue
+                raw_value = record.get(column.name) if column.name in record else values.get(column.name)
+                values[column.name] = deserialize_value(column, raw_value)
 
             db.session.add(model(**values))
             stats[table_key] += 1

@@ -6,12 +6,13 @@ from .models import db, User
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 from .models import BeadMaterial, BeadInventoryBalance
-from utils.roles import ADMIN_ROLE, BUILTIN_ADMIN_USERNAME, BUILTIN_SUPER_ADMIN_USERNAME, SUPER_ADMIN_ROLE
+from utils.roles import ADMIN_ROLE, BUILTIN_ADMIN_ACCOUNT, BUILTIN_SUPER_ADMIN_ACCOUNT, SUPER_ADMIN_ROLE
 
 
 def init_db(app):
     with app.app_context():
         db.create_all()
+        ensure_user_columns()
         ensure_customer_columns()
         ensure_transaction_columns()
         ensure_active_timer_columns()
@@ -77,7 +78,7 @@ def ensure_transaction_columns():
 
 
 def create_default_admin():
-    existing_admin = User.query.filter_by(username=BUILTIN_ADMIN_USERNAME).first()
+    existing_admin = User.query.filter_by(account=BUILTIN_ADMIN_ACCOUNT).first()
     if existing_admin:
         return
 
@@ -85,14 +86,15 @@ def create_default_admin():
     password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
     admin = User(
-        username=BUILTIN_ADMIN_USERNAME,
+        account=BUILTIN_ADMIN_ACCOUNT,
+        username='管理员',
         password_hash=password_hash,
         role=ADMIN_ROLE
     )
 
     db.session.add(admin)
     db.session.commit()
-    print(f'Default admin user created: username={BUILTIN_ADMIN_USERNAME}, password=admin123')
+    print(f'Default admin user created: account={BUILTIN_ADMIN_ACCOUNT}, password=admin123')
 
 
 def create_builtin_super_admin():
@@ -100,10 +102,10 @@ def create_builtin_super_admin():
     if existing_super_admin:
         return
 
-    existing_username = User.query.filter_by(username=BUILTIN_SUPER_ADMIN_USERNAME).first()
-    if existing_username:
+    existing_account = User.query.filter_by(account=BUILTIN_SUPER_ADMIN_ACCOUNT).first()
+    if existing_account:
         print(
-            f'Warning: cannot create builtin super admin because username "{BUILTIN_SUPER_ADMIN_USERNAME}" already exists'
+            f'Warning: cannot create builtin super admin because account "{BUILTIN_SUPER_ADMIN_ACCOUNT}" already exists'
         )
         return
 
@@ -111,7 +113,8 @@ def create_builtin_super_admin():
     password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
     super_admin = User(
-        username=BUILTIN_SUPER_ADMIN_USERNAME,
+        account=BUILTIN_SUPER_ADMIN_ACCOUNT,
+        username='超级管理员',
         password_hash=password_hash,
         role=SUPER_ADMIN_ROLE
     )
@@ -121,13 +124,54 @@ def create_builtin_super_admin():
         db.session.commit()
     except IntegrityError:
         db.session.rollback()
-        existing_after_conflict = User.query.filter_by(username=BUILTIN_SUPER_ADMIN_USERNAME).first()
+        existing_after_conflict = User.query.filter_by(account=BUILTIN_SUPER_ADMIN_ACCOUNT).first()
         if existing_after_conflict:
             return
         raise
     print(
-        f'Builtin super admin created: username={BUILTIN_SUPER_ADMIN_USERNAME}, password={password}'
+        f'Builtin super admin created: account={BUILTIN_SUPER_ADMIN_ACCOUNT}, password={password}'
     )
+
+
+def ensure_user_columns():
+    inspector = inspect(db.engine)
+    if 'users' not in inspector.get_table_names():
+        return
+
+    backend_name = db.engine.url.get_backend_name()
+    columns = inspector.get_columns('users')
+    existing_columns = {column['name'] for column in columns}
+    column_map = {column['name']: column for column in columns}
+    existing_indexes = {index.get('name') for index in inspector.get_indexes('users')}
+    target_account_length = 191
+
+    if 'account' not in existing_columns:
+        db.session.execute(text(f'ALTER TABLE users ADD COLUMN account VARCHAR({target_account_length})'))
+
+    account_column = column_map.get('account')
+    if backend_name == 'mysql' and account_column is not None:
+        try:
+            account_length = int(getattr(account_column.get('type'), 'length', 0) or 0)
+        except (TypeError, ValueError):
+            account_length = 0
+        if account_length < target_account_length:
+            db.session.execute(
+                text(f'ALTER TABLE users MODIFY COLUMN account VARCHAR({target_account_length}) NULL')
+            )
+
+    db.session.execute(text("UPDATE users SET account = username WHERE account IS NULL OR TRIM(account) = ''"))
+    if 'username' in existing_columns:
+        db.session.execute(text("UPDATE users SET username = account WHERE username IS NULL OR TRIM(username) = ''"))
+
+    if backend_name == 'mysql':
+        db.session.execute(
+            text(f'ALTER TABLE users MODIFY COLUMN account VARCHAR({target_account_length}) NOT NULL')
+        )
+
+    if 'ix_users_account' not in existing_indexes:
+        db.session.execute(text('CREATE UNIQUE INDEX ix_users_account ON users (account)'))
+
+    db.session.commit()
 
 
 def ensure_active_timer_columns():

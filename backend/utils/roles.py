@@ -1,5 +1,5 @@
-BUILTIN_ADMIN_USERNAME = 'admin'
-BUILTIN_SUPER_ADMIN_USERNAME = 'superadmin'
+BUILTIN_ADMIN_ACCOUNT = 'admin'
+BUILTIN_SUPER_ADMIN_ACCOUNT = 'superadmin'
 SUPER_ADMIN_ROLE = 'super_admin'
 ADMIN_ROLE = 'admin'
 STAFF_ROLE = 'staff'
@@ -31,9 +31,9 @@ def is_admin(user_or_role):
 
 
 def is_builtin_admin(user):
-    return str(getattr(user, 'username', '') or '').strip().lower() == BUILTIN_ADMIN_USERNAME
+    return str(getattr(user, 'account', '') or '').strip().lower() == BUILTIN_ADMIN_ACCOUNT
 
 
 def is_builtin_super_admin(user):
-    username = str(getattr(user, 'username', '') or '').strip().lower()
-    return username == BUILTIN_SUPER_ADMIN_USERNAME and is_super_admin(user)
+    account = str(getattr(user, 'account', '') or '').strip().lower()
+    return account == BUILTIN_SUPER_ADMIN_ACCOUNT and is_super_admin(user)

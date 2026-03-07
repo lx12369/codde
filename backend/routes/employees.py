@@ -6,7 +6,7 @@ from utils.audit_log import get_operator_name, write_log
 from utils.decorators import token_required
 from utils.roles import (
     ADMIN_ROLE,
-    BUILTIN_ADMIN_USERNAME,
+    BUILTIN_ADMIN_ACCOUNT,
     STAFF_ROLE,
     SUPER_ADMIN_ROLE,
     is_admin,
@@ -47,6 +47,10 @@ def _is_super_admin(user):
     return is_super_admin(user)
 
 
+def _normalize_text(value):
+    return str(value or '').strip()
+
+
 def _require_admin():
     current_user = _get_current_user()
     if not current_user:
@@ -80,7 +84,8 @@ def get_employees():
 
     keyword = str(search or '').strip()
     if keyword:
-        query = query.filter(User.username.ilike(f'%{keyword}%'))
+        like_pattern = f'%{keyword}%'
+        query = query.filter(db.or_(User.username.ilike(like_pattern), User.account.ilike(like_pattern)))
 
     total = query.count()
     users = query.order_by(User.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
@@ -104,12 +109,15 @@ def create_employee():
     if not data:
         return error_response('No data provided', 400)
 
-    username = str(data.get('username') or '').strip()
+    username = _normalize_text(data.get('username'))
+    account = _normalize_text(data.get('account'))
     password = data.get('password')
     role = _normalize_role(data.get('role'), fallback='staff')
 
     if not username:
         return error_response('用户名不能为空', 400)
+    if not account:
+        return error_response('账号不能为空', 400)
     if not password:
         return error_response('密码不能为空', 400)
     if len(str(password)) < 6:
@@ -118,10 +126,11 @@ def create_employee():
         return error_response('角色仅支持 admin、staff 或 super_admin', 400)
     if role == SUPER_ADMIN_ROLE and not _is_super_admin(current_user):
         return error_response('仅超级管理员可创建超级管理员账号', 403)
-    if User.query.filter_by(username=username).first():
-        return error_response('用户名已存在', 409)
+    if User.query.filter_by(account=account).first():
+        return error_response('账号已存在', 409)
 
     user = User(
+        account=account,
         username=username,
         password_hash=hash_password(password),
         role=role
@@ -131,7 +140,7 @@ def create_employee():
     operator = get_operator_name()
     write_log(
         'employee_create',
-        f'创建员工账号：{username}（角色：{role}）',
+        f'创建员工账号：{username}（账号：{account}，角色：{role}）',
         operator=operator
     )
 
@@ -160,16 +169,23 @@ def update_employee(user_id):
         return error_response('No data provided', 400)
 
     before_username = target_user.username
+    before_account = target_user.account
     before_role = target_user.role
 
     if 'username' in data:
-        username = str(data.get('username') or '').strip()
+        username = _normalize_text(data.get('username'))
         if not username:
             return error_response('用户名不能为空', 400)
-        duplicated = User.query.filter(User.username == username, User.id != target_user.id).first()
-        if duplicated:
-            return error_response('用户名已存在', 409)
         target_user.username = username
+
+    if 'account' in data:
+        account = _normalize_text(data.get('account'))
+        if not account:
+            return error_response('账号不能为空', 400)
+        duplicated = User.query.filter(User.account == account, User.id != target_user.id).first()
+        if duplicated:
+            return error_response('账号已存在', 409)
+        target_user.account = account
 
     if 'role' in data:
         role = _normalize_role(data.get('role'), fallback=None)
@@ -182,6 +198,8 @@ def update_employee(user_id):
     changes = []
     if before_username != target_user.username:
         changes.append(f'用户名：{before_username or "-"} -> {target_user.username or "-"}')
+    if before_account != target_user.account:
+        changes.append(f'账号：{before_account or "-"} -> {target_user.account or "-"}')
     if before_role != target_user.role:
         changes.append(f'角色：{before_role or "-"} -> {target_user.role or "-"}')
 
@@ -189,7 +207,7 @@ def update_employee(user_id):
         operator = get_operator_name()
         write_log(
             'employee_update',
-            f'更新员工账号：{target_user.username}（ID: {target_user.id}），变更：{"；".join(changes)}',
+            f'更新员工账号：{target_user.username}（账号：{target_user.account}，ID: {target_user.id}），变更：{"；".join(changes)}',
             operator=operator
         )
 
@@ -230,7 +248,7 @@ def reset_employee_password(user_id):
     operator = get_operator_name()
     write_log(
         'employee_reset_password',
-        f'重置员工密码：{target_user.username}（ID: {target_user.id}）',
+        f'重置员工密码：{target_user.username}（账号：{target_user.account}，ID: {target_user.id}）',
         operator=operator
     )
 
@@ -252,7 +270,7 @@ def delete_employee(user_id):
         return error_response('Employee not found', 404)
     if target_user.id == current_user.id:
         return error_response('不能删除当前登录账号', 403)
-    if str(target_user.username or '').strip().lower() == BUILTIN_ADMIN_USERNAME:
+    if str(target_user.account or '').strip().lower() == BUILTIN_ADMIN_ACCOUNT:
         return error_response('默认管理员账号不可删除', 403)
     if is_builtin_super_admin(target_user):
         return error_response('内置超级管理员账号不可删除', 403)
@@ -260,13 +278,14 @@ def delete_employee(user_id):
         return error_response('仅超级管理员可删除超级管理员账号', 403)
 
     username = target_user.username
+    account = target_user.account
 
     db.session.delete(target_user)
 
     operator = get_operator_name()
     write_log(
         'employee_delete',
-        f'删除员工账号：{username}（ID: {user_id}）',
+        f'删除员工账号：{username}（账号：{account}，ID: {user_id}）',
         operator=operator
     )
 

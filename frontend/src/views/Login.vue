@@ -9,13 +9,13 @@ const router = useRouter()
 const authStore = useAuthStore()
 
 const form = ref({
-  username: '',
+  account: '',
   password: '',
   rememberMe: false
 })
 
 const errors = ref({
-  username: '',
+  account: '',
   password: ''
 })
 
@@ -105,10 +105,10 @@ onBeforeUnmount(() => {
 
 function validateForm() {
   let isValid = true
-  errors.value = { username: '', password: '' }
+  errors.value = { account: '', password: '' }
 
-  if (!form.value.username.trim()) {
-    errors.value.username = '请输入用户名'
+  if (!form.value.account.trim()) {
+    errors.value.account = '请输入账号'
     isValid = false
   }
 
@@ -132,7 +132,7 @@ async function handleLogin() {
 
   try {
     const response = await api.post('/auth/login', {
-      username: form.value.username,
+      account: form.value.account,
       password: form.value.password,
       rememberMe: form.value.rememberMe
     })
@@ -151,7 +151,7 @@ async function handleLogin() {
     router.push({ name: 'dashboard' })
   } catch (error) {
     console.error('Login failed:', error)
-    errorMessage.value = error.response?.data?.message || error.message || '登录失败，请检查用户名和密码'
+    errorMessage.value = error.response?.data?.message || error.message || '登录失败，请检查账号和密码'
     showErrorModal.value = true
   } finally {
     isLoading.value = false
@@ -213,17 +213,17 @@ function closeErrorModal() {
 
         <form @submit.prevent="handleLogin" class="login-form">
           <div class="form-field">
-            <label for="username">用户名</label>
+            <label for="account">账号</label>
             <input
-              id="username"
-              v-model="form.username"
+              id="account"
+              v-model="form.account"
               type="text"
               autocomplete="username"
-              :class="['field-input', errors.username ? 'field-input--error' : '']"
-              placeholder="请输入用户名"
+              :class="['field-input', errors.account ? 'field-input--error' : '']"
+              placeholder="请输入账号"
             />
-            <p v-if="errors.username" class="field-error">
-              {{ errors.username }}
+            <p v-if="errors.account" class="field-error">
+              {{ errors.account }}
             </p>
           </div>
 

@@ -36,9 +36,9 @@ sudo find . -mindepth 1 -maxdepth 1 ! -name ".git" ! -name "backend" -exec rm -r
 sudo find backend -mindepth 1 -maxdepth 1 ! -name "instance" ! -name ".env" ! -name ".venv" -exec rm -rf {} +
 sudo cp -a "$STAGE_ROOT"/. "$PROJECT_ROOT"/
 sudo chown -R admin:admin "$PROJECT_ROOT"
+sudo chmod +x "$PROJECT_ROOT/scripts/deploy-codde-zip.sh" "$PROJECT_ROOT/scripts/server-update.sh"
 
 echo "[5/6] Restarting application"
-sudo chmod +x "$PROJECT_ROOT/scripts/server-update.sh"
 cd "$PROJECT_ROOT"
 ./scripts/server-update.sh
 

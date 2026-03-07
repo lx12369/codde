@@ -79,6 +79,23 @@ function dayLabel(dayType) {
   return dayType === 'weekend' ? '周末' : '工作日'
 }
 
+function formatChineseCount(value) {
+  const safeValue = Math.max(1, toInteger(value, 1))
+  const map = {
+    1: '一',
+    2: '二',
+    3: '三',
+    4: '四',
+    5: '五',
+    6: '六',
+    7: '七',
+    8: '八',
+    9: '九',
+    10: '十'
+  }
+  return map[safeValue] || String(safeValue)
+}
+
 function createLocalPackageId(dayType = 'weekday') {
   return `${dayType}_pkg_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
 }
@@ -119,7 +136,7 @@ function createEmptyPackage(dayType = 'weekday', index = 1, peopleCount = 1) {
   return {
     id: createLocalPackageId(dayType),
     code: uniqueCode,
-    label: `${dayLabel(dayType)}${Math.max(1, peopleCount)}人不限时不限板`,
+    label: `${dayLabel(dayType)}${formatChineseCount(peopleCount)}人不限时不限板`,
     people_count: Math.max(1, peopleCount),
     price: 0,
     enabled: true,
@@ -156,7 +173,7 @@ function syncDayPackages(dayType, sourceRule = {}) {
       return {
         id: String(item?.id || createLocalPackageId(dayType)).trim() || createLocalPackageId(dayType),
         code: normalizePackageCode(item?.code, fallbackCode) || fallbackCode,
-        label: String(item?.label || '').trim() || `${dayLabel(dayType)}${peopleCount}人不限时不限板`,
+        label: String(item?.label || '').trim() || `${dayLabel(dayType)}${formatChineseCount(peopleCount)}人不限时不限板`,
         people_count: peopleCount,
         price: Math.max(0, toNumber(item?.price, 0)),
         enabled: item?.enabled !== false,

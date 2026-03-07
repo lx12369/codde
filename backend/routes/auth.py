@@ -23,19 +23,19 @@ def login():
     if not data:
         return error_response('请求体不能为空', 400)
 
-    username = str(data.get('username') or '').strip()
+    account = str(data.get('account') or data.get('username') or '').strip()
     password = data.get('password')
     remember_me = bool(data.get('rememberMe', False))
 
-    if not username or not password:
-        return error_response('用户名和密码为必填项', 400)
+    if not account or not password:
+        return error_response('账号和密码为必填项', 400)
 
-    user = User.query.filter_by(username=username).first()
+    user = User.query.filter_by(account=account).first()
     if not user:
-        return error_response('用户名或密码错误', 401)
+        return error_response('账号或密码错误', 401)
 
     if not verify_password(password, user.password_hash):
-        return error_response('用户名或密码错误', 401)
+        return error_response('账号或密码错误', 401)
 
     token_expires = (
         current_app.config.get('JWT_REMEMBER_TOKEN_EXPIRES', 604800)
@@ -44,7 +44,8 @@ def login():
     )
     token = generate_token(user.id, expires_seconds=token_expires)
 
-    write_log('login', f'用户 {username} 登录成功', operator=username)
+    operator_label = user.username or user.account
+    write_log('login', f'用户 {operator_label}（账号：{user.account}）登录成功', operator=operator_label)
     db.session.commit()
 
     return success_response(
@@ -86,8 +87,8 @@ def change_password():
 
     write_log(
         'password_change',
-        f'用户 {current_user.username} 修改了密码',
-        operator=current_user.username
+        f'用户 {current_user.username or current_user.account}（账号：{current_user.account}）修改了密码',
+        operator=current_user.username or current_user.account
     )
     db.session.commit()
 

@@ -36,6 +36,7 @@ const showDeleteDialog = ref(false)
 const pendingActionUser = ref(null)
 
 const createForm = reactive({
+  account: '',
   username: '',
   password: '',
   role: 'staff'
@@ -43,12 +44,14 @@ const createForm = reactive({
 
 const editForm = reactive({
   id: null,
+  account: '',
   username: '',
   role: 'staff'
 })
 
 const resetForm = reactive({
   id: null,
+  account: '',
   username: '',
   newPassword: '',
   confirmPassword: ''
@@ -146,6 +149,7 @@ function ensureAdminAction() {
 }
 
 function resetCreateForm() {
+  createForm.account = ''
   createForm.username = ''
   createForm.password = ''
   createForm.role = 'staff'
@@ -153,12 +157,14 @@ function resetCreateForm() {
 
 function resetEditForm() {
   editForm.id = null
+  editForm.account = ''
   editForm.username = ''
   editForm.role = 'staff'
 }
 
 function resetPasswordForm() {
   resetForm.id = null
+  resetForm.account = ''
   resetForm.username = ''
   resetForm.newPassword = ''
   resetForm.confirmPassword = ''
@@ -197,6 +203,7 @@ function openCreateDialog() {
 function openEditDialog(user) {
   if (!ensureAdminAction()) return
   editForm.id = user.id
+  editForm.account = user.account || ''
   editForm.username = user.username || ''
   editForm.role = normalizeRole(user.role || 'staff')
   showEditDialog.value = true
@@ -205,6 +212,7 @@ function openEditDialog(user) {
 function openResetDialog(user) {
   if (!ensureAdminAction()) return
   resetForm.id = user.id
+  resetForm.account = user.account || ''
   resetForm.username = user.username || ''
   resetForm.newPassword = ''
   resetForm.confirmPassword = ''
@@ -233,6 +241,7 @@ async function fetchEmployees() {
 
     employees.value = items.map((item) => ({
       id: item.id,
+      account: item.account || '',
       username: item.username || '',
       role: normalizeRole(item.role || 'staff'),
       createdAt: item.created_at
@@ -250,10 +259,15 @@ async function fetchEmployees() {
 async function submitCreate() {
   if (!ensureAdminAction()) return
 
+  const account = String(createForm.account || '').trim()
   const username = String(createForm.username || '').trim()
   const password = String(createForm.password || '')
   const role = normalizeRole(createForm.role || '')
 
+  if (!account) {
+    showFeedback('error', '请输入账号')
+    return
+  }
   if (!username) {
     showFeedback('error', '请输入用户名')
     return
@@ -270,6 +284,7 @@ async function submitCreate() {
   submitting.value = true
   try {
     await employeeApi.createEmployee({
+      account,
       username,
       password,
       role
@@ -288,9 +303,14 @@ async function submitCreate() {
 async function submitEdit() {
   if (!ensureAdminAction()) return
 
+  const account = String(editForm.account || '').trim()
   const username = String(editForm.username || '').trim()
   const role = normalizeRole(editForm.role || '')
 
+  if (!account) {
+    showFeedback('error', '账号不能为空')
+    return
+  }
   if (!username) {
     showFeedback('error', '用户名不能为空')
     return
@@ -303,6 +323,7 @@ async function submitEdit() {
   submitting.value = true
   try {
     await employeeApi.updateEmployee(editForm.id, {
+      account,
       username,
       role
     })
@@ -409,7 +430,7 @@ onBeforeUnmount(() => {
           <p class="page-hero__eyebrow">People Workspace</p>
           <h1 class="page-hero__title">员工管理</h1>
           <p class="page-hero__meta">
-            当前账号：{{ authStore.user?.username || '-' }}（{{ toRoleLabel(authStore.user?.role) }}）
+            当前账号：{{ authStore.user?.username || authStore.user?.account || '-' }}（{{ toRoleLabel(authStore.user?.role) }}）
           </p>
         </div>
         <button
@@ -466,7 +487,7 @@ onBeforeUnmount(() => {
             id="employee-search"
             v-model="searchKeyword"
             type="text"
-            placeholder="按用户名搜索"
+            placeholder="按用户名或账号搜索"
             class="employee-input w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] focus:ring-offset-1"
             @keyup.enter="handleSearch"
           >
@@ -525,6 +546,7 @@ onBeforeUnmount(() => {
             <tr>
               <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">ID</th>
               <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">用户名</th>
+              <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">账号</th>
               <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">角色</th>
               <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">创建时间</th>
               <th class="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-500">操作</th>
@@ -534,6 +556,7 @@ onBeforeUnmount(() => {
             <tr v-for="employee in employees" :key="employee.id" class="employee-row hover:bg-slate-50/70">
               <td class="px-4 py-3 text-sm text-slate-700">{{ employee.id }}</td>
               <td class="px-4 py-3 text-sm font-medium text-slate-900">{{ employee.username }}</td>
+              <td class="px-4 py-3 text-sm text-slate-600">{{ employee.account || '-' }}</td>
               <td class="px-4 py-3 text-sm">
                 <span
                   :class="[
@@ -645,6 +668,15 @@ onBeforeUnmount(() => {
               >
             </div>
             <div>
+              <label for="create-account" class="employee-field-label mb-1.5 block text-sm font-medium text-slate-700">账号</label>
+              <input
+                id="create-account"
+                v-model.trim="createForm.account"
+                type="text"
+                class="employee-input w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] focus:ring-offset-1"
+              >
+            </div>
+            <div>
               <label for="create-password" class="employee-field-label mb-1.5 block text-sm font-medium text-slate-700">初始密码</label>
               <input
                 id="create-password"
@@ -704,6 +736,15 @@ onBeforeUnmount(() => {
               >
             </div>
             <div>
+              <label for="edit-account" class="employee-field-label mb-1.5 block text-sm font-medium text-slate-700">账号</label>
+              <input
+                id="edit-account"
+                v-model.trim="editForm.account"
+                type="text"
+                class="employee-input w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#1d4ed8] focus:ring-offset-1"
+              >
+            </div>
+            <div>
               <label for="edit-role" class="employee-field-label mb-1.5 block text-sm font-medium text-slate-700">角色</label>
               <select
                 id="edit-role"
@@ -742,7 +783,8 @@ onBeforeUnmount(() => {
         <div class="relative w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-2xl">
           <div class="border-b border-slate-100 px-5 py-4">
             <h3 class="text-lg font-semibold text-slate-900">重置密码</h3>
-            <p class="mt-1 text-xs text-slate-500">账号：{{ resetForm.username }}</p>
+            <p class="mt-1 text-xs text-slate-500">用户名：{{ resetForm.username }}</p>
+            <p class="mt-1 text-xs text-slate-500">账号：{{ resetForm.account }}</p>
           </div>
           <form class="space-y-4 px-5 py-5" @submit.prevent="submitResetPassword">
             <div>
