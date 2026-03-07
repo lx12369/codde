@@ -6,6 +6,26 @@ from flask import current_app
 from models import RevokedToken, db
 
 
+def _coerce_user_id(user_id):
+    if isinstance(user_id, str) and user_id.isdigit():
+        return int(user_id)
+    if isinstance(user_id, int):
+        return user_id
+    return None
+
+
+def _coerce_timestamp_to_datetime(value):
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, (int, float)):
+        return datetime.utcfromtimestamp(value)
+    return None
+
+
+def _build_user_revocation_jti(user_id):
+    return f'user-revoke-{user_id}'
+
+
 def generate_token(user_id, expires_seconds=None):
     token_ttl = int(expires_seconds or current_app.config.get('JWT_ACCESS_TOKEN_EXPIRES', 32400))
     payload = {
@@ -53,9 +73,7 @@ def revoke_token(token):
         RevokedToken.expires_at < datetime.utcnow()
     ).delete(synchronize_session=False)
 
-    user_id = payload.get('sub')
-    if isinstance(user_id, str) and user_id.isdigit():
-        user_id = int(user_id)
+    user_id = _coerce_user_id(payload.get('sub'))
 
     exp_ts = payload.get('exp')
     expires_at = datetime.utcfromtimestamp(exp_ts) if exp_ts else None
@@ -65,11 +83,62 @@ def revoke_token(token):
     return True
 
 
+def revoke_user_tokens(user_id):
+    normalized_user_id = _coerce_user_id(user_id)
+    if normalized_user_id is None:
+        return False
+
+    cutoff = datetime.utcnow()
+    jti = _build_user_revocation_jti(normalized_user_id)
+    existing = RevokedToken.query.filter_by(jti=jti).first()
+
+    RevokedToken.query.filter(
+        RevokedToken.expires_at.isnot(None),
+        RevokedToken.expires_at < cutoff
+    ).delete(synchronize_session=False)
+
+    if existing:
+        existing.user_id = normalized_user_id
+        existing.revoked_at = cutoff
+        existing.expires_at = None
+    else:
+        db.session.add(
+            RevokedToken(
+                jti=jti,
+                user_id=normalized_user_id,
+                revoked_at=cutoff,
+                expires_at=None
+            )
+        )
+
+    db.session.commit()
+    return True
+
+
 def is_token_revoked(payload):
-    jti = payload.get('jti') if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        return False
+
+    jti = payload.get('jti')
     if not jti:
         return False
-    return RevokedToken.query.filter_by(jti=jti).first() is not None
+
+    if RevokedToken.query.filter_by(jti=jti).first() is not None:
+        return True
+
+    user_id = _coerce_user_id(payload.get('sub'))
+    if user_id is None:
+        return False
+
+    user_revoke_marker = RevokedToken.query.filter_by(jti=_build_user_revocation_jti(user_id)).first()
+    if not user_revoke_marker:
+        return False
+
+    issued_at = _coerce_timestamp_to_datetime(payload.get('iat'))
+    if issued_at is None:
+        return True
+
+    return issued_at <= user_revoke_marker.revoked_at
 
 
 def hash_password(password):

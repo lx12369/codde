@@ -4,6 +4,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores'
 import { timerApi, authApi } from '@/api'
 import { useBackdropClose } from '@/utils/modalBackdrop'
+import { getRoleLabel, isAdminRole, isSuperAdminRole } from '@/utils/roles'
 
 const router = useRouter()
 const route = useRoute()
@@ -37,7 +38,7 @@ const WARNING_STORAGE_KEY = 'active_timer_warning_v1'
 const WARNING_LEAD_STORAGE_KEY = 'timer_warning_lead_seconds_v1'
 const LEGACY_WARNING_LEAD_STORAGE_KEY = 'timer_warning_lead_minutes_v1'
 const DEFAULT_WARNING_LEAD_SECONDS = 600
-const TABLE_NO_PATTERN = /^([A-HJ-NP-Za-hj-np-z])桌([1-9]|1[0-9]|20)号$/
+const TABLE_NO_PATTERN = /^([A-HJ-NP-Za-hj-np-z])桌([1-9]|[1-9][0-9]|100)号$/
 const PACKAGE_TOTAL_MINUTES = {
   limited1h: 60,
   limited2h: 120
@@ -53,10 +54,11 @@ let timerWarningPoller = null
 let timerWarningTicker = null
 let timerWarningRefreshing = false
 const showWarningDebugPanel = ref(false)
-const isAdmin = computed(() => String(authStore.user?.role || '').toLowerCase() === 'admin')
+const isAdmin = computed(() => isAdminRole(authStore.user?.role))
+const isSuperAdmin = computed(() => isSuperAdminRole(authStore.user?.role))
 const currentUserLabel = computed(() => {
   const username = String(authStore.user?.username || '').trim()
-  const roleLabel = isAdmin.value ? '管理员' : '员工'
+  const roleLabel = getRoleLabel(authStore.user?.role)
   return username ? `${username}（${roleLabel}）` : roleLabel
 })
 
@@ -71,7 +73,7 @@ function toSeatCode(rawTableNo) {
   const normalized = normalizeTableNo(rawTableNo)
   const matched = TABLE_NO_PATTERN.exec(normalized)
   if (!matched) return ''
-  return `${matched[1].toLowerCase()}${matched[2]}`
+  return `${matched[2]}`
 }
 
 function getTimerExtraTableNos(timer) {
@@ -729,6 +731,14 @@ const menuItems = computed(() => {
       path: '/transactions',
       group: 'operation'
     },
+    ...(isSuperAdmin.value
+      ? [{
+        title: '过期交易',
+        icon: 'receipt',
+        path: '/expired-transactions',
+        group: 'operation'
+      }]
+      : []),
     {
       title: '活动管理',
       icon: 'calendar',
@@ -755,13 +765,16 @@ const menuItems = computed(() => {
     },
   ]
 
-  if (isAdmin.value) {
+  if (isSuperAdmin.value) {
     items.push({
       title: '系统日志',
       icon: 'receipt',
       path: '/system-logs',
       group: 'system'
     })
+  }
+
+  if (isAdmin.value) {
     items.push({
       title: '数据管理',
       icon: 'settings',
@@ -872,10 +885,9 @@ const submitPasswordChange = async () => {
       current_password: passwordForm.currentPassword,
       new_password: passwordForm.newPassword
     })
-    passwordSuccess.value = '密码修改成功'
-    passwordForm.currentPassword = ''
-    passwordForm.newPassword = ''
-    passwordForm.confirmPassword = ''
+    authStore.logout()
+    closeChangePasswordModal()
+    router.push('/login')
   } catch (error) {
     console.error('Failed to change password:', error)
     passwordError.value = error.response?.data?.message || '密码修改失败'

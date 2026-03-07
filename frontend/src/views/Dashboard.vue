@@ -77,7 +77,7 @@ const coreKpiCards = computed(() => ([
   },
   {
     id: 'today_consumption_people',
-    title: '今日消费人数',
+    title: '今日消费人次',
     value: formatPeople(stats.value.today_consumption_people),
     hint: '按消费记录估算人次',
     tag: '客流热度',
@@ -101,7 +101,7 @@ const overviewCards = computed(() => ([
   },
   {
     id: 'today_net_income',
-    title: '今日总收益',
+    title: '今日净收益',
     value: formatAmount(stats.value.today_net_income),
     tag: '净收益',
     chipClass: 'bg-emerald-50 text-emerald-700',
@@ -266,7 +266,7 @@ function toNumber(value) {
 
 function formatAmount(amount) {
   const normalized = toNumber(amount)
-  return `¥${normalized.toLocaleString('zh-CN', {
+  return `￥${normalized.toLocaleString('zh-CN', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
   })}`

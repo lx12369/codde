@@ -84,6 +84,19 @@ DAY_TYPE_LABELS = {
     'weekday': '工作日',
     'weekend': '周末',
 }
+CHINESE_DIGITS = {
+    0: '零',
+    1: '一',
+    2: '二',
+    3: '三',
+    4: '四',
+    5: '五',
+    6: '六',
+    7: '七',
+    8: '八',
+    9: '九',
+    10: '十',
+}
 LEGACY_DAY_TYPE_MAP = {
     'weekday': {
         'singleUnlimited': 'weekdaySingleUnlimited',
@@ -145,7 +158,8 @@ def _clone_default_unlimited_packages(day_type):
 def _build_default_unlimited_label(day_type, people_count):
     day_label = DAY_TYPE_LABELS.get(day_type, day_type)
     safe_people = max(1, _to_int(people_count, 1))
-    return f'{day_label}{safe_people}人不限时不限板'
+    chinese_people = CHINESE_DIGITS.get(safe_people, str(safe_people))
+    return f'{day_label}{chinese_people}人不限时不限板'
 
 
 def _default_unlimited_code(day_type, people_count, index):

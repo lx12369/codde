@@ -3,10 +3,26 @@ import {
   getDayUnlimitedPackageOptions,
   getPackagePlanPeopleCount
 } from '@/utils/consumptionCalculator'
-
-export const TABLE_AREA_OPTIONS = 'ABCDEFGHJKLMNPQRSTUVWXYZ'.split('')
-export const TABLE_SEAT_OPTIONS = Array.from({ length: 20 }, (_, index) => String(index + 1))
-export const TABLE_NO_PATTERN = /^([A-HJ-NP-Za-hj-np-z])桌([1-9]|1[0-9]|20)号$/
+export {
+  TABLE_AREA_OPTIONS,
+  TABLE_SEAT_OPTIONS,
+  TABLE_NO_PATTERN,
+  buildTableNo,
+  normalizeTableNo,
+  isValidTableNo,
+  parseTableNoParts
+} from '@/utils/seatLayout'
+import {
+  TABLE_AREA_OPTIONS,
+  TABLE_SEAT_OPTIONS,
+  buildTableNo,
+  getSeatOptionByTableNo,
+  getSeatOptionList,
+  isConfiguredTableNo,
+  isValidTableNo,
+  normalizeTableNo,
+  parseTableNoParts
+} from '@/utils/seatLayout'
 
 function normalizeTableArea(value = '', fallback = TABLE_AREA_OPTIONS[0]) {
   const normalized = String(value || '').trim().toUpperCase()
@@ -44,7 +60,29 @@ function buildLegacyExtraSeatSelection(form = {}, fallbackArea = TABLE_AREA_OPTI
   }
 }
 
-function normalizeExtraSeatSelection(rawSelection, fallbackArea = TABLE_AREA_OPTIONS[0]) {
+function resolveSeatOption(rawSelection, seatLayoutConfig = null) {
+  if (typeof rawSelection === 'string') {
+    return getSeatOptionByTableNo(rawSelection, seatLayoutConfig)
+  }
+
+  const source = rawSelection && typeof rawSelection === 'object' ? rawSelection : {}
+  const directTableNo = normalizeTableNo(source.tableNo)
+  return getSeatOptionByTableNo(
+    directTableNo || buildTableNo(source.tableArea ?? source.area, source.tableSeat ?? source.seat),
+    seatLayoutConfig
+  )
+}
+
+function normalizeExtraSeatSelection(rawSelection, fallbackArea = TABLE_AREA_OPTIONS[0], seatLayoutConfig = null) {
+  const configuredSeatOption = resolveSeatOption(rawSelection, seatLayoutConfig)
+  if (configuredSeatOption) {
+    return {
+      tableArea: configuredSeatOption.tableArea,
+      tableSeat: configuredSeatOption.tableSeat,
+      tableNo: configuredSeatOption.tableNo
+    }
+  }
+
   if (typeof rawSelection === 'string') {
     const parsed = parseTableNoParts(rawSelection, fallbackArea, '')
     return {
@@ -71,41 +109,6 @@ function normalizeExtraSeatSelection(rawSelection, fallbackArea = TABLE_AREA_OPT
     tableArea: parsed.tableArea,
     tableSeat: parsed.tableSeat,
     tableNo: buildTableNo(parsed.tableArea, parsed.tableSeat)
-  }
-}
-
-export function buildTableNo(area = '', seat = '') {
-  const normalizedArea = normalizeTableArea(area, '')
-  const normalizedSeat = normalizeTableSeat(seat, '')
-  if (!normalizedArea) return ''
-  if (!normalizedSeat) return ''
-  return `${normalizedArea}桌${normalizedSeat}号`
-}
-
-export function normalizeTableNo(value = '') {
-  const raw = String(value || '').trim()
-  const matched = raw.match(TABLE_NO_PATTERN)
-  if (!matched) return raw
-  return `${matched[1].toUpperCase()}桌${matched[2]}号`
-}
-
-export function isValidTableNo(value = '') {
-  return TABLE_NO_PATTERN.test(normalizeTableNo(value))
-}
-
-export function parseTableNoParts(tableNo = '', fallbackArea = TABLE_AREA_OPTIONS[0], fallbackSeat = TABLE_SEAT_OPTIONS[0]) {
-  const normalizedFallbackArea = normalizeTableArea(fallbackArea, TABLE_AREA_OPTIONS[0])
-  const normalizedFallbackSeat = normalizeTableSeat(fallbackSeat, '')
-  const matched = normalizeTableNo(tableNo).match(TABLE_NO_PATTERN)
-  if (!matched) {
-    return {
-      tableArea: normalizedFallbackArea,
-      tableSeat: normalizedFallbackSeat
-    }
-  }
-  return {
-    tableArea: normalizeTableArea(matched[1], normalizedFallbackArea),
-    tableSeat: normalizeTableSeat(matched[2], normalizedFallbackSeat)
   }
 }
 
@@ -172,15 +175,21 @@ export function getDefaultTimerPackagePlan(timerType = 'limited', rawRules = {},
   return normalizedOptions[0]?.value || 'limited1h'
 }
 
-export function createTimerConsumeForm(customerId = '', rawRules = {}) {
-  return {
-    customerId,
+export function createTimerConsumeForm(customerId = '', rawRules = {}, seatLayoutConfig = null) {
+  const defaultSeatOption = getSeatOptionList(seatLayoutConfig)[0] || {
     tableArea: TABLE_AREA_OPTIONS[0],
     tableSeat: TABLE_SEAT_OPTIONS[0],
-    tableNo: `${TABLE_AREA_OPTIONS[0]}桌${TABLE_SEAT_OPTIONS[0]}号`,
+    tableNo: `${TABLE_AREA_OPTIONS[0]}桌${TABLE_SEAT_OPTIONS[0]}号`
+  }
+
+  return {
+    customerId,
+    tableArea: defaultSeatOption.tableArea,
+    tableSeat: defaultSeatOption.tableSeat,
+    tableNo: defaultSeatOption.tableNo,
     extraTableSelections: [],
     extraTableNos: [],
-    secondTableArea: TABLE_AREA_OPTIONS[0],
+    secondTableArea: defaultSeatOption.tableArea,
     secondTableSeat: '',
     secondTableNo: '',
     timerType: 'limited',
@@ -212,7 +221,8 @@ function normalizeMiscSelections(selectionMap = {}) {
 export function normalizeExtraTableSelections(
   rawSelections = [],
   requiredCount = 0,
-  fallbackArea = TABLE_AREA_OPTIONS[0]
+  fallbackArea = TABLE_AREA_OPTIONS[0],
+  seatLayoutConfig = null
 ) {
   const count = Math.max(0, Math.floor(Number(requiredCount) || 0))
   if (count === 0) return []
@@ -220,7 +230,7 @@ export function normalizeExtraTableSelections(
   const list = Array.isArray(rawSelections) ? rawSelections : []
   const normalizedFallbackArea = normalizeTableArea(fallbackArea, TABLE_AREA_OPTIONS[0])
   return Array.from({ length: count }, (_, index) => {
-    const normalized = normalizeExtraSeatSelection(list[index], normalizedFallbackArea)
+    const normalized = normalizeExtraSeatSelection(list[index], normalizedFallbackArea, seatLayoutConfig)
     return {
       tableArea: normalized.tableArea,
       tableSeat: normalized.tableSeat,
@@ -229,7 +239,7 @@ export function normalizeExtraTableSelections(
   })
 }
 
-function collectDistinctExtraTableNos(extraTableSelections = [], primaryTableNo = '') {
+function collectDistinctExtraTableNos(extraTableSelections = [], primaryTableNo = '', seatLayoutConfig = null) {
   const unique = []
   const seen = new Set()
   const normalizedPrimary = normalizeTableNo(primaryTableNo)
@@ -240,6 +250,7 @@ function collectDistinctExtraTableNos(extraTableSelections = [], primaryTableNo 
   extraTableSelections.forEach((selection) => {
     const tableNo = normalizeTableNo(selection?.tableNo || buildTableNo(selection?.tableArea, selection?.tableSeat))
     if (!isValidTableNo(tableNo)) return
+    if (seatLayoutConfig && !isConfiguredTableNo(tableNo, seatLayoutConfig)) return
     if (seen.has(tableNo)) return
     seen.add(tableNo)
     unique.push(tableNo)
@@ -248,10 +259,28 @@ function collectDistinctExtraTableNos(extraTableSelections = [], primaryTableNo 
   return unique
 }
 
-export function getTimerConsumeSeatPayload(form = {}, rawRules = {}) {
-  const tableArea = normalizeTableArea(form.tableArea, TABLE_AREA_OPTIONS[0])
-  const tableSeat = normalizeTableSeat(form.tableSeat, TABLE_SEAT_OPTIONS[0])
-  const tableNo = normalizeTableNo(buildTableNo(tableArea, tableSeat) || form.tableNo)
+export function getTimerConsumeSeatPayload(form = {}, rawRules = {}, seatLayoutConfig = null) {
+  const defaultSeatOption = getSeatOptionList(seatLayoutConfig)[0] || {
+    tableArea: TABLE_AREA_OPTIONS[0],
+    tableSeat: TABLE_SEAT_OPTIONS[0],
+    tableNo: buildTableNo(TABLE_AREA_OPTIONS[0], TABLE_SEAT_OPTIONS[0])
+  }
+  const configuredPrimarySeat = resolveSeatOption(
+    {
+      tableArea: form.tableArea,
+      tableSeat: form.tableSeat,
+      tableNo: form.tableNo
+    },
+    seatLayoutConfig
+  )
+  const tableArea = configuredPrimarySeat?.tableArea || normalizeTableArea(form.tableArea, defaultSeatOption.tableArea)
+  const tableSeat = configuredPrimarySeat?.tableSeat || normalizeTableSeat(form.tableSeat, defaultSeatOption.tableSeat)
+  const tableNo = normalizeTableNo(
+    configuredPrimarySeat?.tableNo
+      || buildTableNo(tableArea, tableSeat)
+      || form.tableNo
+      || defaultSeatOption.tableNo
+  )
   const requiredExtraSeatCount = getRequiredExtraSeatCount(form.packagePlan, rawRules)
 
   let sourceSelections = []
@@ -266,8 +295,8 @@ export function getTimerConsumeSeatPayload(form = {}, rawRules = {}) {
     }
   }
 
-  const extraTableSelections = normalizeExtraTableSelections(sourceSelections, requiredExtraSeatCount, tableArea)
-  const extraTableNos = collectDistinctExtraTableNos(extraTableSelections, tableNo)
+  const extraTableSelections = normalizeExtraTableSelections(sourceSelections, requiredExtraSeatCount, tableArea, seatLayoutConfig)
+  const extraTableNos = collectDistinctExtraTableNos(extraTableSelections, tableNo, seatLayoutConfig)
 
   return {
     tableArea,
@@ -280,7 +309,7 @@ export function getTimerConsumeSeatPayload(form = {}, rawRules = {}) {
   }
 }
 
-export function validateTimerConsumeForm(form = {}, customers = [], rawRules = {}) {
+export function validateTimerConsumeForm(form = {}, customers = [], rawRules = {}, seatLayoutConfig = null) {
   const errors = {}
   const customerId = String(form.customerId || '').trim()
   const customerExists = customers.some((customer) => String(customer?.id || '').trim() === customerId)
@@ -305,12 +334,14 @@ export function validateTimerConsumeForm(form = {}, customers = [], rawRules = {
     }
   }
 
-  const seatPayload = getTimerConsumeSeatPayload(form, rawRules)
+  const seatPayload = getTimerConsumeSeatPayload(form, rawRules, seatLayoutConfig)
   const tableNo = seatPayload.tableNo
   if (!tableNo) {
     errors.tableNo = '请选择桌号'
   } else if (!isValidTableNo(tableNo)) {
-    errors.tableNo = '桌号必须在 A-H/J-N/P-Z 桌、1-20号范围内'
+    errors.tableNo = '桌号必须在 A-H/J-N/P-Z 桌、1-100号范围内'
+  } else if (seatLayoutConfig && !isConfiguredTableNo(tableNo, seatLayoutConfig)) {
+    errors.tableNo = '请选择有效座位'
   }
 
   if (seatPayload.requiredExtraSeatCount > 0) {
@@ -328,6 +359,11 @@ export function validateTimerConsumeForm(form = {}, customers = [], rawRules = {
       }
       if (!isValidTableNo(tableNoAtIndex)) {
         errors[key] = `${seatLabel}格式不正确`
+        detailErrors.push(errors[key])
+        return
+      }
+      if (seatLayoutConfig && !isConfiguredTableNo(tableNoAtIndex, seatLayoutConfig)) {
+        errors[key] = `${seatLabel}不在已配置座位中`
         detailErrors.push(errors[key])
         return
       }
@@ -353,8 +389,8 @@ export function validateTimerConsumeForm(form = {}, customers = [], rawRules = {
   }
 }
 
-export function buildTimerConsumeNotesPayload(form = {}, rawRules = {}) {
-  const seatPayload = getTimerConsumeSeatPayload(form, rawRules)
+export function buildTimerConsumeNotesPayload(form = {}, rawRules = {}, seatLayoutConfig = null) {
+  const seatPayload = getTimerConsumeSeatPayload(form, rawRules, seatLayoutConfig)
   return JSON.stringify({
     note: form.notes || '',
     packagePlan: form.packagePlan || getDefaultTimerPackagePlan(form.timerType, rawRules),
@@ -369,12 +405,12 @@ export function buildTimerConsumeNotesPayload(form = {}, rawRules = {}) {
   })
 }
 
-export function buildTimerConsumeRequestPayload(form = {}, rawRules = {}) {
-  const seatPayload = getTimerConsumeSeatPayload(form, rawRules)
+export function buildTimerConsumeRequestPayload(form = {}, rawRules = {}, seatLayoutConfig = null) {
+  const seatPayload = getTimerConsumeSeatPayload(form, rawRules, seatLayoutConfig)
   return {
     customer_id: form.customerId || '',
     table_no: seatPayload.tableNo,
     timer_type: form.timerType || 'limited',
-    notes: buildTimerConsumeNotesPayload(form, rawRules)
+    notes: buildTimerConsumeNotesPayload(form, rawRules, seatLayoutConfig)
   }
 }

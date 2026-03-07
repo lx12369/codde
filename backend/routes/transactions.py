@@ -1,7 +1,7 @@
 ﻿from datetime import datetime, timezone
-from flask import Blueprint, request
+from flask import Blueprint, g, request
 import re
-from models import db, Transaction, Customer, Balance, Activity, BeadInventoryBalance, BeadInventoryLedger
+from models import db, Transaction, Customer, Balance, Activity, BeadInventoryBalance, BeadInventoryLedger, User
 from utils.audit_log import get_operator_name, write_log
 from utils.misc_inventory_service import normalize_misc_selections, apply_misc_outbound, apply_misc_inbound
 from utils.misc_selection_codec import (
@@ -12,6 +12,7 @@ from utils.misc_selection_codec import (
 from utils.response import success_response, error_response, paginated_response
 from utils.decorators import token_required
 from utils.bead_inventory_service import generate_entity_id, generate_reference_no
+from utils.roles import is_super_admin
 
 transactions_bp = Blueprint('transactions', __name__)
 BEAD_PURCHASE_DESC_PATTERN = re.compile(
@@ -62,10 +63,37 @@ def _normalize_transaction_status(value):
     return status or 'completed'
 
 
+def _get_current_user():
+    current_user_id = getattr(g, 'current_user_id', None)
+    if current_user_id is None:
+        return None
+    return User.query.get(current_user_id)
+
+
+def _require_super_admin_for_expired_transactions():
+    current_user = _get_current_user()
+    if not current_user:
+        return error_response('用户不存在或未登录', 401)
+    if not is_super_admin(current_user):
+        return error_response('仅超级管理员可查看过期交易', 403)
+    return None
+
+
 def _mark_transaction_cancelled(transaction, *, operator, reason):
     transaction.status = 'cancelled'
     transaction.cancelled_at = datetime.utcnow()
     transaction.cancel_reason = str(reason or '').strip() or None
+    transaction.cancelled_by = str(operator or '').strip() or 'system'
+
+
+def _mark_transaction_expired(transaction, *, operator, replaced_by_transaction_id=None):
+    transaction.status = 'expired'
+    transaction.cancelled_at = datetime.utcnow()
+    transaction.cancel_reason = (
+        f'重新结算后过期，由交易 #{replaced_by_transaction_id} 替换'
+        if replaced_by_transaction_id
+        else '重新结算后过期'
+    )
     transaction.cancelled_by = str(operator or '').strip() or 'system'
 
 
@@ -268,6 +296,7 @@ def get_transactions():
     transaction_type = request.args.get('type', None)
     status = str(request.args.get('status', 'all') or 'all').strip().lower()
     customer_id = request.args.get('customer_id', None)
+    description_keyword = str(request.args.get('description', '') or '').strip()
     date_start = request.args.get('date_start', None)
     date_end = request.args.get('date_end', None)
 
@@ -276,11 +305,22 @@ def get_transactions():
     if transaction_type:
         query = query.filter(Transaction.type == transaction_type)
 
-    if status in {'completed', 'cancelled', 'pending'}:
+    if status == 'expired':
+        permission_error = _require_super_admin_for_expired_transactions()
+        if permission_error:
+            return permission_error
+        query = query.filter(Transaction.status == 'expired')
+    elif status in {'completed', 'cancelled', 'pending'}:
         query = query.filter(Transaction.status == status)
+    else:
+        query = query.filter(db.or_(Transaction.status.is_(None), Transaction.status != 'expired'))
 
     if customer_id:
         query = query.filter(Transaction.customer_id == customer_id)
+
+    if description_keyword:
+        like_pattern = f'%{description_keyword}%'
+        query = query.filter(Transaction.description.ilike(like_pattern))
 
     if date_start:
         try:
@@ -296,7 +336,10 @@ def get_transactions():
         except ValueError:
             pass
 
-    query = query.order_by(Transaction.transaction_time.desc())
+    if status == 'expired':
+        query = query.order_by(Transaction.cancelled_at.desc(), Transaction.transaction_time.desc())
+    else:
+        query = query.order_by(Transaction.transaction_time.desc())
 
     pagination = query.paginate(page=page, per_page=page_size, error_out=False)
 
@@ -332,6 +375,10 @@ def get_transaction(transaction_id):
 
     if not transaction:
         return error_response('Transaction not found', 404)
+    if _normalize_transaction_status(transaction.status) == 'expired':
+        permission_error = _require_super_admin_for_expired_transactions()
+        if permission_error:
+            return permission_error
 
     payload = transaction.to_dict()
     payload['misc_selections'] = extract_misc_selections(transaction.description)
@@ -528,6 +575,11 @@ def update_transaction(transaction_id):
     transaction = Transaction.query.filter_by(id=transaction_id).first()
     if not transaction:
         return error_response('交易记录不存在', 404)
+    current_status = _normalize_transaction_status(transaction.status)
+    if current_status == 'cancelled':
+        return error_response('已撤销的交易不可重新结算', 400)
+    if current_status == 'expired':
+        return error_response('过期交易不可重新结算', 400)
 
     if not _is_timer_consumption_transaction(transaction):
         return error_response('仅支持重新结算计时消费记录', 400)
@@ -625,10 +677,15 @@ def update_transaction(transaction_id):
             type=transaction.type,
             amount=next_amount,
             description=next_stored_description,
-            operator=operator
+            operator=operator,
+            status='completed'
         )
         db.session.add(new_transaction)
-        db.session.delete(transaction)
+        _mark_transaction_expired(
+            transaction,
+            operator=operator,
+            replaced_by_transaction_id=new_transaction.id
+        )
         result_transaction = new_transaction
     else:
         transaction.amount = next_amount
@@ -674,8 +731,11 @@ def cancel_transaction(transaction_id):
     transaction = Transaction.query.filter_by(id=transaction_id).first()
     if not transaction:
         return error_response('交易记录不存在', 404)
-    if _normalize_transaction_status(transaction.status) == 'cancelled':
+    normalized_status = _normalize_transaction_status(transaction.status)
+    if normalized_status == 'cancelled':
         return error_response('该交易已撤销，请勿重复操作', 400)
+    if normalized_status == 'expired':
+        return error_response('过期交易不可取消', 400)
 
     customer = Customer.query.filter_by(id=transaction.customer_id).first()
     if not customer:

@@ -2,6 +2,7 @@
 import { ref, reactive, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import api from '@/api'
 import { useAuthStore } from '@/stores'
+import { isAdminRole } from '@/utils/roles'
 import { useBackdropClose } from '@/utils/modalBackdrop'
 import TimerConsumeDialog from '@/components/timers/TimerConsumeDialog.vue'
 import {
@@ -13,10 +14,22 @@ import {
   buildTimerConsumeRequestPayload,
   TABLE_AREA_OPTIONS,
   TABLE_SEAT_OPTIONS,
+  TABLE_NO_PATTERN,
   buildTableNo,
+  normalizeTableNo,
+  parseTableNoParts,
+  isValidTableNo,
   getRequiredExtraSeatCount,
   getTimerConsumeSeatPayload
 } from '@/utils/timerConsume'
+import {
+  cloneSeatLayoutConfig,
+  getSeatLayoutTablesBySection,
+  getSeatOptionByTableNo,
+  getSeatOptionList,
+  validateSeatLayoutDraft
+} from '@/utils/seatLayout'
+import { useSeatLayoutConfigState } from '@/utils/seatLayoutState'
 import {
   normalizeBillingRules,
   calculateConsumptionAmount,
@@ -33,6 +46,7 @@ import { getEffectiveBillingDayType } from '@/utils/dayType'
 const timers = ref([])
 const customers = ref([])
 const billingRules = ref(normalizeBillingRules())
+const { seatLayoutConfig, loadSeatLayoutConfig, applySeatLayoutConfig } = useSeatLayoutConfigState()
 const authStore = useAuthStore()
 const { onBackdropMouseDown, onBackdropMouseUp } = useBackdropClose()
 
@@ -48,11 +62,16 @@ const showLivingRoomModal = ref(false)
 const showSmallRoomModal = ref(false)
 const showGardenModal = ref(false)
 const showUpstairsModal = ref(false)
+const showSeatOverviewModal = ref(false)
 const restoreRoomAfterAddModal = ref('')
 const warningQueue = ref([])
 const activeWarning = ref(null)
 const seatSelectionMode = ref('single')
 const pendingMultiSeatSelection = ref(null)
+const seatLayoutEditMode = ref(false)
+const seatLayoutSaving = ref(false)
+const seatLayoutDraft = ref(cloneSeatLayoutConfig(seatLayoutConfig.value))
+const seatLayoutDraftErrors = ref({})
 const selectedTimer = ref(null)
 const editingTimer = ref(null)
 const addTimerDialogRef = ref(null)
@@ -76,7 +95,6 @@ const OVERTIME_START_HOUR = 19
 const OVERTIME_START_MINUTE = 30
 const DEFAULT_OVERTIME_RATE_PER_MINUTE = 0.5
 const DAY_MS = 24 * 60 * 60 * 1000
-const TABLE_NO_PATTERN = /^([A-HJ-NP-Za-hj-np-z])桌([1-9]|1[0-9]|20)号$/
 const WARNING_STORAGE_KEY = 'active_timer_warning_v1'
 const PACKAGE_TRIGGER_MINUTES = {
   limited1h: 50,
@@ -87,7 +105,7 @@ const PACKAGE_TOTAL_MINUTES = {
   limited2h: 120
 }
 
-const addForm = reactive(createTimerConsumeForm())
+const addForm = reactive(createTimerConsumeForm('', {}, seatLayoutConfig.value))
 
 const settleForm = reactive({
   billingType: 'limited',
@@ -127,7 +145,7 @@ const editForm = reactive({
 const addErrors = ref({})
 const editErrors = ref({})
 const settleErrors = ref({})
-const isAdmin = computed(() => String(authStore.user?.role || '').toLowerCase() === 'admin')
+const isAdmin = computed(() => isAdminRole(authStore.user?.role))
 
 const customerMap = computed(() => {
   const map = new Map()
@@ -154,26 +172,12 @@ const addTimerCustomerOptions = computed(() => {
 const timerTypeOptions = sharedTimerTypeOptions
 const tableAreaOptions = TABLE_AREA_OPTIONS
 const tableSeatOptions = TABLE_SEAT_OPTIONS
-const LIVING_ROOM_LAYOUT_TABLES = [
-  { area: 'F', seatCount: 4, seatColumns: 2, shape: 'square' },
-  { area: 'C', seatCount: 6, seatColumns: 3, shape: 'wide' },
-  { area: 'E', seatCount: 4, seatColumns: 2, shape: 'square' },
-  { area: 'B', seatCount: 6, seatColumns: 3, shape: 'wide' },
-  { area: 'D', seatCount: 4, seatColumns: 2, shape: 'square' },
-  { area: 'A', seatCount: 6, seatColumns: 3, shape: 'wide' }
-]
-const SMALL_ROOM_LAYOUT_TABLES = [
-  { area: 'G', seatCount: 4, seatColumns: 2, shape: 'wide' },
-  { area: 'H', seatCount: 4, seatColumns: 1, shape: 'tall' },
-  { area: 'J', seatCount: 2, seatColumns: 2, shape: 'wide' }
-]
-const GARDEN_LAYOUT_TABLES = [
-  { area: 'K', seatCount: 6, seatColumns: 3, shape: 'square' },
-  { area: 'L', seatCount: 4, seatColumns: 2, shape: 'square' }
-]
-const UPSTAIRS_LAYOUT_TABLES = [
-  { area: 'M', seatCount: 3, seatColumns: 3, shape: 'wide' }
-]
+const seatOptions = computed(() => getSeatOptionList(seatLayoutConfig.value))
+const activeSeatLayoutSource = computed(() => (
+  seatLayoutEditMode.value
+    ? seatLayoutDraft.value
+    : seatLayoutConfig.value
+))
 
 const enabledMiscItems = computed(() => {
   const source = Array.isArray(billingRules.value?.misc?.items) ? billingRules.value.misc.items : []
@@ -341,9 +345,29 @@ const settleOvertimeRatePerMinute = computed(() => {
   return configuredRate
 })
 
+const settleOvertimePeopleCount = computed(() => {
+  if (!selectedTimer.value) return 1
+  const packagePeopleCount = getPackagePlanPeopleCount(selectedTimer.value.packagePlan || '', billingRules.value)
+  const occupiedSeatCount = getTimerOccupiedTableNos(selectedTimer.value).length
+  const resolvedPeopleCount = Math.max(
+    1,
+    Math.floor(Number(packagePeopleCount) || 0),
+    Math.floor(Number(occupiedSeatCount) || 0)
+  )
+  return resolvedPeopleCount >= 2 ? resolvedPeopleCount : 1
+})
+
+const settleOvertimeTotalRatePerMinute = computed(() =>
+  round2(settleOvertimeRatePerMinute.value * settleOvertimePeopleCount.value)
+)
+
+const settleOvertimeFeeByRule = computed(() =>
+  round2(settleOvertimeMinutes.value * settleOvertimeTotalRatePerMinute.value)
+)
+
 const settleOvertimeFee = computed(() => {
   if (!settleForm.applyOvertimeFee) return 0
-  return round2(settleOvertimeMinutes.value * settleOvertimeRatePerMinute.value)
+  return settleOvertimeFeeByRule.value
 })
 
 const settleTotalAdditionalFee = computed(() => round2(settleRawAdditionalFee.value + settleOvertimeFee.value))
@@ -514,55 +538,10 @@ function getPackagePlanLabel(plan) {
   return getPackagePlanLabelByRules(plan, billingRules.value)
 }
 
-function normalizeTableNo(value) {
-  const raw = String(value || '').trim()
-  const matched = raw.match(TABLE_NO_PATTERN)
-  if (!matched) return raw
-  return `${matched[1].toUpperCase()}桌${matched[2]}号`
-}
-
-function isValidTableNo(value) {
-  return TABLE_NO_PATTERN.test(normalizeTableNo(value))
-}
-
 function toDeskSpeechCode(tableNo) {
   const matched = normalizeTableNo(tableNo).match(TABLE_NO_PATTERN)
   if (!matched) return ''
-  return `${matched[1].toLowerCase()}${matched[2]}`
-}
-
-function parseExactTableNo(tableNo) {
-  const matched = normalizeTableNo(tableNo).match(TABLE_NO_PATTERN)
-  if (!matched) return null
-  return {
-    tableArea: matched[1].toUpperCase(),
-    tableSeat: matched[2]
-  }
-}
-
-function parseTableNoParts(
-  tableNo,
-  fallbackArea = TABLE_AREA_OPTIONS[0],
-  fallbackSeat = TABLE_SEAT_OPTIONS[0]
-) {
-  const normalizedFallbackArea = TABLE_AREA_OPTIONS.includes(String(fallbackArea || '').trim().toUpperCase())
-    ? String(fallbackArea || '').trim().toUpperCase()
-    : TABLE_AREA_OPTIONS[0]
-  const rawFallbackSeat = String(fallbackSeat || '').trim()
-  const normalizedFallbackSeat = TABLE_SEAT_OPTIONS.includes(rawFallbackSeat) ? rawFallbackSeat : ''
-  const parsed = parseExactTableNo(tableNo)
-  if (!parsed) {
-    return {
-      tableArea: normalizedFallbackArea,
-      tableSeat: normalizedFallbackSeat
-    }
-  }
-  const tableArea = parsed.tableArea
-  const tableSeat = parsed.tableSeat
-  return {
-    tableArea: TABLE_AREA_OPTIONS.includes(tableArea) ? tableArea : normalizedFallbackArea,
-    tableSeat: TABLE_SEAT_OPTIONS.includes(tableSeat) ? tableSeat : normalizedFallbackSeat
-  }
+  return `${matched[2]}`
 }
 
 function getTimerOccupiedTableNos(timer) {
@@ -636,6 +615,20 @@ function formatTimerTableNoDisplay(timer) {
   return ''
 }
 
+function formatTimerTableNoDescriptionLabel(timer) {
+  const seatNumbers = getTimerOccupiedTableNos(timer)
+    .map((seatNo) => {
+      const matched = normalizeTableNo(seatNo).match(TABLE_NO_PATTERN)
+      return String(matched?.[2] || '').trim()
+    })
+    .filter(Boolean)
+
+  if (seatNumbers.length > 0) return seatNumbers.join(' / ')
+
+  const fallbackMatched = normalizeTableNo(timer?.tableNo).match(TABLE_NO_PATTERN)
+  return String(fallbackMatched?.[2] || '').trim()
+}
+
 function formatTimerSpeechDeskLabel(timer) {
   const deskCodes = getTimerOccupiedTableNos(timer)
     .map((seatNo) => toDeskSpeechCode(seatNo))
@@ -644,25 +637,28 @@ function formatTimerSpeechDeskLabel(timer) {
   return timer?.customerName || `客户${timer?.customerId || ''}`
 }
 
-function buildSeatLayoutTables(layoutTables = []) {
+function buildSeatLayoutTables(sectionKey = '') {
   const activeTimers = timers.value.filter((timer) => timer.status === 'active' || timer.status === 'paused')
   const seatOwnerMap = new Map()
+  const currentSeatOptionMap = new Map(
+    getSeatOptionList(seatLayoutConfig.value).map((item) => [item.tableNo, item.slotKey])
+  )
 
   activeTimers.forEach((timer) => {
     getTimerOccupiedTableNos(timer).forEach((seatNo) => {
-      if (!seatOwnerMap.has(seatNo)) {
-        seatOwnerMap.set(seatNo, timer)
+      const slotKey = currentSeatOptionMap.get(seatNo)
+      if (!slotKey) return
+      if (!seatOwnerMap.has(slotKey)) {
+        seatOwnerMap.set(slotKey, timer)
       }
     })
   })
 
-  return layoutTables.map((table) => {
-    const seats = Array.from({ length: table.seatCount }, (_, index) => {
-      const seatNo = String(index + 1)
-      const tableNo = `${table.area}桌${seatNo}号`
-      const matchedTimer = seatOwnerMap.get(tableNo)
+  return getSeatLayoutTablesBySection(sectionKey, activeSeatLayoutSource.value).map((table) => {
+    const seats = table.seats.map((seat) => {
+      const matchedTimer = seatOwnerMap.get(seat.slotKey)
       return {
-        seatNo,
+        ...seat,
         occupied: Boolean(matchedTimer),
         customerName: matchedTimer?.customerName || '',
         timerId: matchedTimer?.id || ''
@@ -676,10 +672,10 @@ function buildSeatLayoutTables(layoutTables = []) {
   })
 }
 
-const seatLayoutTables = computed(() => buildSeatLayoutTables(LIVING_ROOM_LAYOUT_TABLES))
-const smallRoomSeatLayoutTables = computed(() => buildSeatLayoutTables(SMALL_ROOM_LAYOUT_TABLES))
-const gardenSeatLayoutTables = computed(() => buildSeatLayoutTables(GARDEN_LAYOUT_TABLES))
-const upstairsSeatLayoutTables = computed(() => buildSeatLayoutTables(UPSTAIRS_LAYOUT_TABLES))
+const seatLayoutTables = computed(() => buildSeatLayoutTables('living'))
+const smallRoomSeatLayoutTables = computed(() => buildSeatLayoutTables('small'))
+const gardenSeatLayoutTables = computed(() => buildSeatLayoutTables('garden'))
+const upstairsSeatLayoutTables = computed(() => buildSeatLayoutTables('upstairs'))
 
 const livingRoomSeatSummary = computed(() => {
   const totals = seatLayoutTables.value.reduce((acc, table) => {
@@ -737,6 +733,61 @@ const upstairsSeatSummary = computed(() => {
   }
 })
 
+const overallSeatSummary = computed(() => {
+  const summaries = [
+    livingRoomSeatSummary.value,
+    smallRoomSeatSummary.value,
+    gardenSeatSummary.value,
+    upstairsSeatSummary.value
+  ]
+
+  return summaries.reduce((acc, summary) => {
+    acc.total += Number(summary?.total) || 0
+    acc.occupied += Number(summary?.occupied) || 0
+    acc.available += Number(summary?.available) || 0
+    return acc
+  }, { total: 0, occupied: 0, available: 0 })
+})
+
+const seatOverviewSections = computed(() => ([
+  {
+    key: 'living',
+    title: '客厅',
+    subtitle: '大厅区域',
+    summary: livingRoomSeatSummary.value,
+    tables: seatLayoutTables.value,
+    panelClass: 'border-slate-200 bg-gradient-to-br from-slate-50 via-blue-50 to-cyan-50',
+    badgeClass: 'bg-blue-100 text-blue-700'
+  },
+  {
+    key: 'small',
+    title: '小房间',
+    subtitle: '私密小间',
+    summary: smallRoomSeatSummary.value,
+    tables: smallRoomSeatLayoutTables.value,
+    panelClass: 'border-fuchsia-200 bg-gradient-to-br from-violet-50 via-fuchsia-50 to-pink-50',
+    badgeClass: 'bg-fuchsia-100 text-fuchsia-700'
+  },
+  {
+    key: 'garden',
+    title: '花园',
+    subtitle: '露台区域',
+    summary: gardenSeatSummary.value,
+    tables: gardenSeatLayoutTables.value,
+    panelClass: 'border-emerald-200 bg-gradient-to-br from-emerald-50 via-lime-50 to-teal-50',
+    badgeClass: 'bg-emerald-100 text-emerald-700'
+  },
+  {
+    key: 'upstairs',
+    title: '楼上',
+    subtitle: '楼上区域',
+    summary: upstairsSeatSummary.value,
+    tables: upstairsSeatLayoutTables.value,
+    panelClass: 'border-amber-200 bg-gradient-to-br from-amber-50 via-yellow-50 to-orange-50',
+    badgeClass: 'bg-amber-100 text-amber-700'
+  }
+]))
+
 function getUpstairsSeatGridPositionClass(seatNo) {
   const normalizedSeat = String(seatNo || '').trim()
   if (normalizedSeat === '1') return 'col-start-1 row-start-2'
@@ -769,6 +820,15 @@ function isTableNoOccupied(tableNo, excludeTimerId = '') {
     && timer.id !== excludeTimerId
     && getTimerOccupiedTableNos(timer).includes(normalized)
   ))
+}
+
+function findActiveTimerByTableNo(tableNo) {
+  const normalized = normalizeTableNo(tableNo)
+  if (!normalized) return null
+  return timers.value.find((timer) => (
+    timer.status !== 'completed'
+    && getTimerOccupiedTableNos(timer).includes(normalized)
+  )) || null
 }
 
 function loadWarnedTimerIds() {
@@ -886,39 +946,6 @@ function speakWarningText(text) {
     }, 620)
   } catch (error) {
     console.error('语音播报失败:', error)
-  }
-}
-
-function testSpeakerBroadcast() {
-  if (typeof window === 'undefined') {
-    showFeedback('error', '当前环境不支持语音播报。')
-    return
-  }
-
-  const synth = window.speechSynthesis
-  if (!synth || typeof window.SpeechSynthesisUtterance !== 'function') {
-    showFeedback('error', '浏览器不支持语音播报，请更换浏览器后重试。')
-    return
-  }
-
-  try {
-    synth.cancel()
-    const utterance = buildSpeechUtterance('语音测试，a1、a2剩余十分钟。请检查扬声器是否有声音。')
-    if (!utterance) {
-      showFeedback('error', '当前浏览器语音能力不可用。')
-      return
-    }
-    utterance.onerror = () => {
-      showFeedback('error', '测试播报失败，请检查浏览器语音权限与系统输出设备。')
-    }
-    playLeadTone()
-    window.setTimeout(() => {
-      synth.speak(utterance)
-    }, 620)
-    showFeedback('info', '已触发测试播报，请检查扬声器输出。')
-  } catch (error) {
-    console.error('测试播报失败:', error)
-    showFeedback('error', '测试播报失败，请检查浏览器语音能力。')
   }
 }
 
@@ -1308,6 +1335,17 @@ async function fetchBillingRules() {
   }
 }
 
+async function fetchSeatLayoutConfig() {
+  try {
+    await loadSeatLayoutConfig(true)
+  } catch (error) {
+    console.error('获取座位编号配置失败:', error)
+  } finally {
+    seatLayoutDraft.value = cloneSeatLayoutConfig(seatLayoutConfig.value)
+    seatLayoutDraftErrors.value = {}
+  }
+}
+
 async function fetchTimers() {
   loading.value = true
   try {
@@ -1325,7 +1363,7 @@ async function fetchTimers() {
 }
 
 function resetAddForm() {
-  Object.assign(addForm, createTimerConsumeForm('', billingRules.value))
+  Object.assign(addForm, createTimerConsumeForm('', billingRules.value, seatLayoutConfig.value))
   syncAddMiscSelections({})
   addErrors.value = {}
 }
@@ -1357,7 +1395,7 @@ async function syncAddBalance(customerId = '') {
 }
 
 function applyAddForm(nextForm = {}) {
-  Object.assign(addForm, createTimerConsumeForm('', billingRules.value), nextForm)
+  Object.assign(addForm, createTimerConsumeForm('', billingRules.value, seatLayoutConfig.value), nextForm)
 }
 
 function resetFilters() {
@@ -1398,7 +1436,7 @@ function resetEditForm(timer = null) {
 }
 
 function syncEditSeatPayload() {
-  const seatPayload = getTimerConsumeSeatPayload(editForm, billingRules.value)
+  const seatPayload = getTimerConsumeSeatPayload(editForm, billingRules.value, seatLayoutConfig.value)
   const firstExtraSeat = seatPayload.extraTableSelections[0] || {
     tableArea: seatPayload.tableArea,
     tableSeat: '',
@@ -1414,31 +1452,26 @@ function syncEditSeatPayload() {
   editForm.secondTableNo = firstExtraSeat.tableNo
 }
 
-function updateEditExtraSeatArea(index, value) {
-  const list = Array.isArray(editForm.extraTableSelections)
-    ? editForm.extraTableSelections.map((item) => ({ ...item }))
-    : []
-  if (!list[index]) return
-  const area = String(value || '').trim().toUpperCase()
-  list[index] = {
-    ...list[index],
-    tableArea: area,
-    tableNo: buildTableNo(area, list[index].tableSeat)
-  }
-  editForm.extraTableSelections = list
+function updateEditPrimarySeat(tableNo) {
+  const selected = getSeatOptionByTableNo(tableNo, seatLayoutConfig.value)
+  if (!selected) return
+  editForm.tableArea = selected.tableArea
+  editForm.tableSeat = selected.tableSeat
+  editForm.tableNo = selected.tableNo
   syncEditSeatPayload()
 }
 
-function updateEditExtraSeatSeat(index, value) {
+function updateEditExtraSeat(index, tableNo) {
   const list = Array.isArray(editForm.extraTableSelections)
     ? editForm.extraTableSelections.map((item) => ({ ...item }))
     : []
   if (!list[index]) return
-  const seat = String(value || '').trim()
+  const selected = getSeatOptionByTableNo(tableNo, seatLayoutConfig.value)
   list[index] = {
     ...list[index],
-    tableSeat: seat,
-    tableNo: buildTableNo(list[index].tableArea, seat)
+    tableArea: selected?.tableArea || '',
+    tableSeat: selected?.tableSeat || '',
+    tableNo: selected?.tableNo || ''
   }
   editForm.extraTableSelections = list
   syncEditSeatPayload()
@@ -1490,6 +1523,9 @@ async function openAddModal() {
   } else if (showUpstairsModal.value) {
     restoreRoomAfterAddModal.value = 'upstairs'
     closeUpstairsModal()
+  } else if (showSeatOverviewModal.value) {
+    restoreRoomAfterAddModal.value = 'overview'
+    closeSeatOverviewModal()
   } else {
     restoreRoomAfterAddModal.value = ''
   }
@@ -1541,20 +1577,110 @@ function closeUpstairsModal() {
   showUpstairsModal.value = false
 }
 
-async function openAddModalForSeat(tableArea, seatNo, occupied = false) {
+function openSeatOverviewModal() {
+  deactivateMultiSeatSelectionMode()
+  showSeatOverviewModal.value = true
+}
+
+function closeSeatOverviewModal() {
+  deactivateMultiSeatSelectionMode()
+  seatLayoutEditMode.value = false
+  seatLayoutDraft.value = cloneSeatLayoutConfig(seatLayoutConfig.value)
+  seatLayoutDraftErrors.value = {}
+  showSeatOverviewModal.value = false
+}
+
+function syncSeatLayoutDraftErrors() {
+  seatLayoutDraftErrors.value = validateSeatLayoutDraft(seatLayoutDraft.value)
+}
+
+function startSeatLayoutEdit() {
+  if (!isAdmin.value) return
+  deactivateMultiSeatSelectionMode()
+  seatLayoutDraft.value = cloneSeatLayoutConfig(seatLayoutConfig.value)
+  syncSeatLayoutDraftErrors()
+  seatLayoutEditMode.value = true
+}
+
+function cancelSeatLayoutEdit() {
+  seatLayoutEditMode.value = false
+  seatLayoutDraft.value = cloneSeatLayoutConfig(seatLayoutConfig.value)
+  seatLayoutDraftErrors.value = {}
+}
+
+function updateSeatLayoutDraftValue(slotKey, field, value) {
+  const currentSlots = seatLayoutDraft.value?.slots || {}
+  if (!currentSlots[slotKey]) return
+  const nextValue = field === 'tableArea'
+    ? String(value || '').trim().toUpperCase()
+    : String(value || '').trim()
+  seatLayoutDraft.value = {
+    ...seatLayoutDraft.value,
+    slots: {
+      ...currentSlots,
+      [slotKey]: {
+        ...currentSlots[slotKey],
+        [field]: nextValue
+      }
+    }
+  }
+  syncSeatLayoutDraftErrors()
+}
+
+function getSeatLayoutDraftError(slotKey) {
+  return seatLayoutDraftErrors.value?.[slotKey] || ''
+}
+
+async function saveSeatLayoutConfig() {
+  if (!isAdmin.value) return
+  syncSeatLayoutDraftErrors()
+  if (Object.keys(seatLayoutDraftErrors.value).length > 0) {
+    showFeedback('error', '座位编号存在重复或格式错误，请先修正')
+    return
+  }
+
+  seatLayoutSaving.value = true
+  try {
+    const response = await api.put('/seat-layout-config', seatLayoutDraft.value)
+    const payload = unwrapData(response, {})
+    applySeatLayoutConfig(payload)
+    seatLayoutDraft.value = cloneSeatLayoutConfig(seatLayoutConfig.value)
+    seatLayoutDraftErrors.value = {}
+    seatLayoutEditMode.value = false
+    clearPendingMultiSeatSelection()
+    await fetchTimers()
+    showFeedback('success', '座位编号已保存')
+  } catch (error) {
+    console.error('保存座位编号失败:', error)
+    showFeedback('error', error?.response?.data?.message || error?.message || '保存座位编号失败')
+  } finally {
+    seatLayoutSaving.value = false
+  }
+}
+
+function getSeatDisplayCode(item = {}) {
+  if (item.displayCode) return item.displayCode
+  if (item.tableArea && item.tableSeat) return `${item.tableArea}${item.tableSeat}`
+  const option = getSeatOptionByTableNo(item.tableNo, activeSeatLayoutSource.value)
+  return option?.shortLabel || ''
+}
+
+async function openAddModalForSeat(seat, occupied = false) {
   if (occupied) {
-    showFeedback('error', `该座位已有人：${tableArea}${seatNo}`)
+    showFeedback('error', `该座位已有人：${getSeatDisplayCode(seat)}`)
     return
   }
   await openAddModal()
-  const area = String(tableArea || '').trim().toUpperCase()
-  const seat = String(seatNo || '').trim()
-  addForm.tableArea = area
-  addForm.tableSeat = seat
-  addForm.tableNo = buildTableNo(area, seat)
+  const option = getSeatOptionByTableNo(seat?.tableNo, seatLayoutConfig.value)
+    || getSeatOptionByTableNo(seat?.tableNo, activeSeatLayoutSource.value)
+  const tableArea = option?.tableArea || String(seat?.tableArea || '').trim().toUpperCase()
+  const tableSeat = option?.tableSeat || String(seat?.tableSeat || '').trim()
+  addForm.tableArea = tableArea
+  addForm.tableSeat = tableSeat
+  addForm.tableNo = buildTableNo(tableArea, tableSeat)
   addForm.extraTableSelections = []
   addForm.extraTableNos = []
-  addForm.secondTableArea = area
+  addForm.secondTableArea = tableArea
   addForm.secondTableSeat = ''
   addForm.secondTableNo = ''
 }
@@ -1583,14 +1709,13 @@ function getPendingSeatDisplayText() {
     ? pendingMultiSeatSelection.value.seats
     : []
   if (seats.length === 0) return ''
-  return seats.map((item) => `${item.tableArea}${item.seatNo}`).join(' / ')
+  return seats.map((item) => getSeatDisplayCode(item)).join(' / ')
 }
 
-function isPendingSeatSelected(tableArea, seatNo) {
-  const area = String(tableArea || '').trim().toUpperCase()
-  const seat = String(seatNo || '').trim()
+function isPendingSeatSelected(tableNo) {
+  const normalized = normalizeTableNo(tableNo)
   return Array.isArray(pendingMultiSeatSelection.value?.seats)
-    && pendingMultiSeatSelection.value.seats.some((item) => item.tableArea === area && item.seatNo === seat)
+    && pendingMultiSeatSelection.value.seats.some((item) => normalizeTableNo(item.tableNo) === normalized)
 }
 
 const pendingMultiSeatCount = computed(() => (
@@ -1629,24 +1754,43 @@ function resolveMultiPersonPackagePresetByPeopleCount(peopleCount) {
   return null
 }
 
-async function handleSeatLeftClick(tableArea, seatNo, occupied = false) {
-  const area = String(tableArea || '').trim().toUpperCase()
-  const seat = String(seatNo || '').trim()
+async function handleSeatLeftClick(seat) {
+  if (seatLayoutEditMode.value) return
+
+  const tableArea = String(seat?.tableArea || '').trim().toUpperCase()
+  const tableSeat = String(seat?.tableSeat || '').trim()
+  const tableNo = normalizeTableNo(seat?.tableNo || buildTableNo(tableArea, tableSeat))
+  const occupied = Boolean(seat?.occupied)
+  const displayCode = getSeatDisplayCode(seat)
 
   if (seatSelectionMode.value !== 'multi') {
-    await openAddModalForSeat(area, seat, occupied)
+    if (occupied) {
+      const timer = findActiveTimerByTableNo(tableNo)
+      if (!timer) {
+        showFeedback('error', `未找到该座位对应计时单：${displayCode}`)
+        return
+      }
+      openSettleModal(timer)
+      return
+    }
+    await openAddModalForSeat({
+      tableArea,
+      tableSeat,
+      tableNo,
+      displayCode
+    }, occupied)
     return
   }
 
   if (occupied) {
-    showFeedback('error', `该座位已有人：${area}${seat}`)
+    showFeedback('error', `该座位已有人：${displayCode}`)
     return
   }
 
   const currentSeats = Array.isArray(pendingMultiSeatSelection.value?.seats)
     ? [...pendingMultiSeatSelection.value.seats]
     : []
-  const existingIndex = currentSeats.findIndex((item) => item.tableArea === area && item.seatNo === seat)
+  const existingIndex = currentSeats.findIndex((item) => normalizeTableNo(item.tableNo) === tableNo)
 
   if (existingIndex >= 0) {
     currentSeats.splice(existingIndex, 1)
@@ -1654,7 +1798,7 @@ async function handleSeatLeftClick(tableArea, seatNo, occupied = false) {
       ? { seats: currentSeats }
       : null
     if (currentSeats.length > 0) {
-      showFeedback('info', `已移除 ${area}${seat}，当前已选${currentSeats.length}个座位`)
+      showFeedback('info', `已移除 ${displayCode}，当前已选${currentSeats.length}个座位`)
     } else {
       showFeedback('info', '已清空多人选座，请重新点选')
     }
@@ -1662,8 +1806,10 @@ async function handleSeatLeftClick(tableArea, seatNo, occupied = false) {
   }
 
   currentSeats.push({
-    tableArea: area,
-    seatNo: seat
+    tableArea,
+    tableSeat,
+    tableNo,
+    displayCode
   })
   pendingMultiSeatSelection.value = { seats: currentSeats }
 
@@ -1673,7 +1819,7 @@ async function handleSeatLeftClick(tableArea, seatNo, occupied = false) {
     : null
 
   if (selectedCount === 1) {
-    showFeedback('info', `已选第一座位 ${area}${seat}，继续左键追加座位`)
+    showFeedback('info', `已选第一座位 ${displayCode}，继续左键追加座位`)
     return
   }
 
@@ -1708,8 +1854,8 @@ async function confirmPendingMultiSeatSelection() {
   const firstSeat = currentSeats[0]
   const extraSeats = currentSeats.slice(1).map((item) => ({
     tableArea: item.tableArea,
-    tableSeat: item.seatNo,
-    tableNo: buildTableNo(item.tableArea, item.seatNo)
+    tableSeat: item.tableSeat,
+    tableNo: item.tableNo
   }))
   const firstExtraSeat = extraSeats[0] || {
     tableArea: firstSeat.tableArea,
@@ -1718,8 +1864,8 @@ async function confirmPendingMultiSeatSelection() {
   }
 
   addForm.tableArea = firstSeat.tableArea
-  addForm.tableSeat = firstSeat.seatNo
-  addForm.tableNo = buildTableNo(firstSeat.tableArea, firstSeat.seatNo)
+  addForm.tableSeat = firstSeat.tableSeat
+  addForm.tableNo = firstSeat.tableNo
   addForm.extraTableSelections = extraSeats
   addForm.extraTableNos = extraSeats.map((item) => item.tableNo).filter(Boolean)
   addForm.secondTableArea = firstExtraSeat.tableArea
@@ -1742,6 +1888,8 @@ function closeAddModal(force = false) {
     showGardenModal.value = true
   } else if (restoreRoomAfterAddModal.value === 'upstairs') {
     showUpstairsModal.value = true
+  } else if (restoreRoomAfterAddModal.value === 'overview') {
+    showSeatOverviewModal.value = true
   }
   addErrors.value = {}
   addCurrentBalance.value = null
@@ -1776,7 +1924,7 @@ function closeSettleModal() {
 }
 
 function validateAddForm() {
-  const seatPayload = getTimerConsumeSeatPayload(addForm, billingRules.value)
+  const seatPayload = getTimerConsumeSeatPayload(addForm, billingRules.value, seatLayoutConfig.value)
   const firstExtraSeat = seatPayload.extraTableSelections[0] || {
     tableArea: seatPayload.tableArea,
     tableSeat: '',
@@ -1790,12 +1938,12 @@ function validateAddForm() {
   addForm.secondTableSeat = firstExtraSeat.tableSeat
   addForm.secondTableNo = firstExtraSeat.tableNo
 
-  const { isValid, errors } = validateSharedTimerConsumeForm(addForm, addTimerCustomerOptions.value, billingRules.value)
+  const { isValid, errors } = validateSharedTimerConsumeForm(addForm, addTimerCustomerOptions.value, billingRules.value, seatLayoutConfig.value)
   const tableNo = normalizeTableNo(seatPayload.tableNo)
   addForm.tableNo = tableNo
 
   if (tableNo && !isValidTableNo(tableNo)) {
-    errors.tableNo = '桌号必须在 A-H/J-N/P-Z 桌、1-20号范围内'
+    errors.tableNo = '桌号必须在 A-H/J-N/P-Z 桌、1-100号范围内'
   } else if (tableNo && isTableNoOccupied(tableNo)) {
     errors.tableNo = `桌号已占用：${tableNo}`
   }
@@ -1836,7 +1984,7 @@ function validateAddForm() {
 
 function validateEditForm() {
   const errors = {}
-  const seatPayload = getTimerConsumeSeatPayload(editForm, billingRules.value)
+  const seatPayload = getTimerConsumeSeatPayload(editForm, billingRules.value, seatLayoutConfig.value)
   const tableNo = normalizeTableNo(seatPayload.tableNo)
   const firstExtraSeat = seatPayload.extraTableSelections[0] || {
     tableArea: seatPayload.tableArea,
@@ -1858,7 +2006,9 @@ function validateEditForm() {
   if (!tableNo) {
     errors.tableNo = '请选择桌号'
   } else if (!isValidTableNo(tableNo)) {
-    errors.tableNo = '桌号必须在 A-H/J-N/P-Z 桌、1-20号范围内'
+    errors.tableNo = '桌号必须在 A-H/J-N/P-Z 桌、1-100号范围内'
+  } else if (!getSeatOptionByTableNo(tableNo, seatLayoutConfig.value)) {
+    errors.tableNo = '请选择有效座位'
   } else if (isTableNoOccupied(tableNo, editingTimer.value?.id)) {
     errors.tableNo = `桌号已占用：${tableNo}`
   }
@@ -1876,6 +2026,10 @@ function validateEditForm() {
     }
     if (!isValidTableNo(tableNoAtIndex)) {
       errors[key] = `${seatLabel}格式不正确`
+      return
+    }
+    if (!getSeatOptionByTableNo(tableNoAtIndex, seatLayoutConfig.value)) {
+      errors[key] = `${seatLabel}不在已配置座位中`
       return
     }
     if (seenSeats.has(tableNoAtIndex)) {
@@ -1978,7 +2132,7 @@ async function startTimer() {
 
   submitting.value = true
   try {
-    await api.post('/active-timers', buildTimerConsumeRequestPayload(addForm, billingRules.value))
+    await api.post('/active-timers', buildTimerConsumeRequestPayload(addForm, billingRules.value, seatLayoutConfig.value))
     closeAddModal(true)
     await fetchTimers()
     showFeedback('success', '计时已开始。')
@@ -2043,11 +2197,11 @@ async function submitSettlement() {
     if (settleOvertimeMinutes.value > 0) {
       if (settleForm.applyOvertimeFee) {
         settleNotesParts.push(
-          `加班费用￥${formatAmount(settleOvertimeFee.value)}（${settleOvertimeMinutes.value}分钟，￥${formatAmount(settleOvertimeRatePerMinute.value)}/分钟）`
+          `加班费用￥${formatAmount(settleOvertimeFee.value)}（${settleOvertimeMinutes.value}分钟，${settleOvertimePeopleCount.value}人，￥${formatAmount(settleOvertimeRatePerMinute.value)}/人/分钟）`
         )
       } else {
         settleNotesParts.push(
-          `已取消加班费用（${settleOvertimeMinutes.value}分钟，原￥${formatAmount(settleOvertimeMinutes.value * settleOvertimeRatePerMinute.value)}）`
+          `已取消加班费用（${settleOvertimeMinutes.value}分钟，${settleOvertimePeopleCount.value}人，原￥${formatAmount(settleOvertimeFeeByRule.value)}）`
         )
       }
     }
@@ -2062,7 +2216,8 @@ async function submitSettlement() {
       {
         mode: 'timer',
         billingType: settlePreview.value.billingType,
-        elapsedMinutes: settleElapsedMinutes.value
+        elapsedMinutes: settleElapsedMinutes.value,
+        tableLabel: formatTimerTableNoDescriptionLabel(selectedTimer.value)
       },
       settlePreview.value,
       settleNotes
@@ -2167,6 +2322,16 @@ watch(
 )
 
 watch(
+  () => seatLayoutConfig.value,
+  () => {
+    if (seatLayoutEditMode.value) return
+    seatLayoutDraft.value = cloneSeatLayoutConfig(seatLayoutConfig.value)
+    seatLayoutDraftErrors.value = {}
+  },
+  { deep: true }
+)
+
+watch(
   () => filterForm.timerType,
   () => {
     const nextOptions = filterPackagePlanOptions.value
@@ -2212,7 +2377,7 @@ function handleGlobalKeydown(event) {
   if (event.key !== 'Escape') return
   if (submitting.value) return
 
-  const roomModalVisible = showLivingRoomModal.value || showSmallRoomModal.value || showGardenModal.value || showUpstairsModal.value
+  const roomModalVisible = showLivingRoomModal.value || showSmallRoomModal.value || showGardenModal.value || showUpstairsModal.value || showSeatOverviewModal.value
   if (roomModalVisible && pendingMultiSeatSelection.value) {
     event.preventDefault()
     clearPendingMultiSeatSelection()
@@ -2244,6 +2409,12 @@ function handleGlobalKeydown(event) {
     return
   }
 
+  if (showSeatOverviewModal.value) {
+    event.preventDefault()
+    closeSeatOverviewModal()
+    return
+  }
+
   if (showSettleModal.value) {
     event.preventDefault()
     closeSettleModal()
@@ -2264,7 +2435,7 @@ function handleGlobalKeydown(event) {
 
 onMounted(async () => {
   window.addEventListener('keydown', handleGlobalKeydown)
-  await Promise.all([fetchCustomers(), fetchBillingRules()])
+  await Promise.all([fetchCustomers(), fetchBillingRules(), fetchSeatLayoutConfig()])
   await fetchTimers()
   startTicker()
 })
@@ -2288,12 +2459,6 @@ onUnmounted(() => {
           <h1 class="page-hero__title">正在计时</h1>
         </div>
         <div class="flex items-center gap-2">
-          <button
-            @click="testSpeakerBroadcast"
-            class="inline-flex items-center gap-2 rounded-xl border border-white/55 bg-white/15 px-4 py-2 text-sm font-semibold text-white hover:bg-white/25"
-          >
-            测试播报
-          </button>
           <button
             @click="openAddModal"
             class="page-hero__action"
@@ -2397,77 +2562,434 @@ onUnmounted(() => {
     </div>
 
     <section class="management-surface p-4 sm:p-5">
-      <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+      <div class="flex gap-3 overflow-x-auto snap-x snap-mandatory pb-2 md:grid md:grid-cols-2 xl:grid-cols-5 md:overflow-visible md:snap-none md:pb-0">
+        <button
+          type="button"
+          @click="openSeatOverviewModal"
+          class="fresh-card fresh-card--overview w-full min-w-[280px] shrink-0 snap-start rounded-2xl p-4 text-left transition md:min-w-0 h-full flex flex-col"
+        >
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <p class="text-base font-bold text-sky-900">全场座位总览</p>
+              <p class="mt-1 text-xs text-sky-700/85">跨房间看空位，适合多人套餐一次选齐</p>
+            </div>
+            <span class="fresh-card__tag rounded-full px-2 py-0.5 text-[11px] font-semibold">Overview</span>
+          </div>
+          <div class="mt-4 grid grid-cols-3 gap-2 text-center mt-auto">
+            <div class="fresh-stat fresh-stat--total rounded-xl px-2 py-2">
+              <p class="text-[11px] text-slate-500">总座位</p>
+              <p class="mt-1 text-lg font-bold text-slate-900">{{ overallSeatSummary.total }}</p>
+            </div>
+            <div class="fresh-stat fresh-stat--available rounded-xl px-2 py-2">
+              <p class="text-[11px] text-cyan-700">剩余</p>
+              <p class="mt-1 text-lg font-bold text-cyan-900">{{ overallSeatSummary.available }}</p>
+            </div>
+            <div class="fresh-stat fresh-stat--occupied rounded-xl px-2 py-2">
+              <p class="text-[11px] text-pink-700">占用</p>
+              <p class="mt-1 text-lg font-bold text-pink-900">{{ overallSeatSummary.occupied }}</p>
+            </div>
+          </div>
+        </button>
         <button
           type="button"
           @click="openLivingRoomModal"
-          class="w-full rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-blue-50 to-cyan-50 p-4 text-left hover:border-blue-300 hover:shadow-md transition"
+          class="fresh-card fresh-card--living w-full min-w-[280px] shrink-0 snap-start rounded-2xl p-4 text-left transition md:min-w-0 h-full flex flex-col"
         >
-          <div class="flex items-center justify-between">
+          <div class="flex items-start justify-between gap-3">
             <div>
-              <p class="text-base font-bold text-slate-900">客厅座位分布</p>
-              <p class="text-xs text-slate-600 mt-1">点击查看客厅座位图（单座位左键开台，多人模式左键点选后确认）</p>
+              <p class="text-base font-bold text-sky-900">客厅座位分布</p>
+              <p class="mt-1 text-xs text-sky-700/85">点击查看客厅座位图（单座位左键开台，多人模式左键点选后确认）</p>
             </div>
-            <div class="text-right">
-              <p class="text-xs text-slate-500">总座位 {{ livingRoomSeatSummary.total }}</p>
-              <p class="text-sm font-semibold text-emerald-700">剩余 {{ livingRoomSeatSummary.available }}</p>
-              <p class="text-sm font-semibold text-rose-700">占用 {{ livingRoomSeatSummary.occupied }}</p>
+            <span class="fresh-card__tag rounded-full px-2 py-0.5 text-[11px] font-semibold">Living</span>
+          </div>
+          <div class="mt-4 grid grid-cols-3 gap-2 text-center mt-auto">
+            <div class="fresh-stat fresh-stat--total rounded-xl px-2 py-2">
+              <p class="text-[11px] text-slate-500">总座位</p>
+              <p class="mt-1 text-lg font-bold text-slate-900">{{ livingRoomSeatSummary.total }}</p>
+            </div>
+            <div class="fresh-stat fresh-stat--available rounded-xl px-2 py-2">
+              <p class="text-[11px] text-cyan-700">剩余</p>
+              <p class="mt-1 text-lg font-bold text-cyan-900">{{ livingRoomSeatSummary.available }}</p>
+            </div>
+            <div class="fresh-stat fresh-stat--occupied rounded-xl px-2 py-2">
+              <p class="text-[11px] text-pink-700">占用</p>
+              <p class="mt-1 text-lg font-bold text-pink-900">{{ livingRoomSeatSummary.occupied }}</p>
             </div>
           </div>
         </button>
         <button
           type="button"
           @click="openSmallRoomModal"
-          class="w-full rounded-2xl border border-slate-200 bg-gradient-to-br from-violet-50 via-fuchsia-50 to-pink-50 p-4 text-left hover:border-fuchsia-300 hover:shadow-md transition"
+          class="fresh-card fresh-card--small w-full min-w-[280px] shrink-0 snap-start rounded-2xl p-4 text-left transition md:min-w-0 h-full flex flex-col"
         >
-          <div class="flex items-center justify-between">
+          <div class="flex items-start justify-between gap-3">
             <div>
-              <p class="text-base font-bold text-slate-900">小房间座位分布</p>
-              <p class="text-xs text-slate-600 mt-1">点击查看小房间座位图（单座位左键开台，多人模式左键点选后确认）</p>
+              <p class="text-base font-bold text-blue-900">小房间座位分布</p>
+              <p class="mt-1 text-xs text-sky-700/85">点击查看小房间座位图（单座位左键开台，多人模式左键点选后确认）</p>
             </div>
-            <div class="text-right">
-              <p class="text-xs text-slate-500">总座位 {{ smallRoomSeatSummary.total }}</p>
-              <p class="text-sm font-semibold text-emerald-700">剩余 {{ smallRoomSeatSummary.available }}</p>
-              <p class="text-sm font-semibold text-rose-700">占用 {{ smallRoomSeatSummary.occupied }}</p>
+            <span class="fresh-card__tag rounded-full px-2 py-0.5 text-[11px] font-semibold">Private</span>
+          </div>
+          <div class="mt-4 grid grid-cols-3 gap-2 text-center mt-auto">
+            <div class="fresh-stat fresh-stat--total rounded-xl px-2 py-2">
+              <p class="text-[11px] text-slate-500">总座位</p>
+              <p class="mt-1 text-lg font-bold text-slate-900">{{ smallRoomSeatSummary.total }}</p>
+            </div>
+            <div class="fresh-stat fresh-stat--available rounded-xl px-2 py-2">
+              <p class="text-[11px] text-cyan-700">剩余</p>
+              <p class="mt-1 text-lg font-bold text-cyan-900">{{ smallRoomSeatSummary.available }}</p>
+            </div>
+            <div class="fresh-stat fresh-stat--occupied rounded-xl px-2 py-2">
+              <p class="text-[11px] text-pink-700">占用</p>
+              <p class="mt-1 text-lg font-bold text-pink-900">{{ smallRoomSeatSummary.occupied }}</p>
             </div>
           </div>
         </button>
         <button
           type="button"
           @click="openGardenModal"
-          class="w-full rounded-2xl border border-slate-200 bg-gradient-to-br from-emerald-50 via-lime-50 to-teal-50 p-4 text-left hover:border-emerald-300 hover:shadow-md transition"
+          class="fresh-card fresh-card--garden w-full min-w-[280px] shrink-0 snap-start rounded-2xl p-4 text-left transition md:min-w-0 h-full flex flex-col"
         >
-          <div class="flex items-center justify-between">
+          <div class="flex items-start justify-between gap-3">
             <div>
-              <p class="text-base font-bold text-slate-900">花园座位分布</p>
-              <p class="text-xs text-slate-600 mt-1">点击查看花园座位图（单座位左键开台，多人模式左键点选后确认）</p>
+              <p class="text-base font-bold text-cyan-900">花园座位分布</p>
+              <p class="mt-1 text-xs text-sky-700/85">点击查看花园座位图（单座位左键开台，多人模式左键点选后确认）</p>
             </div>
-            <div class="text-right">
-              <p class="text-xs text-slate-500">总座位 {{ gardenSeatSummary.total }}</p>
-              <p class="text-sm font-semibold text-emerald-700">剩余 {{ gardenSeatSummary.available }}</p>
-              <p class="text-sm font-semibold text-rose-700">占用 {{ gardenSeatSummary.occupied }}</p>
+            <span class="fresh-card__tag rounded-full px-2 py-0.5 text-[11px] font-semibold">Garden</span>
+          </div>
+          <div class="mt-4 grid grid-cols-3 gap-2 text-center mt-auto">
+            <div class="fresh-stat fresh-stat--total rounded-xl px-2 py-2">
+              <p class="text-[11px] text-slate-500">总座位</p>
+              <p class="mt-1 text-lg font-bold text-slate-900">{{ gardenSeatSummary.total }}</p>
+            </div>
+            <div class="fresh-stat fresh-stat--available rounded-xl px-2 py-2">
+              <p class="text-[11px] text-cyan-700">剩余</p>
+              <p class="mt-1 text-lg font-bold text-cyan-900">{{ gardenSeatSummary.available }}</p>
+            </div>
+            <div class="fresh-stat fresh-stat--occupied rounded-xl px-2 py-2">
+              <p class="text-[11px] text-pink-700">占用</p>
+              <p class="mt-1 text-lg font-bold text-pink-900">{{ gardenSeatSummary.occupied }}</p>
             </div>
           </div>
         </button>
         <button
           type="button"
           @click="openUpstairsModal"
-          class="w-full rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 via-yellow-50 to-orange-50 p-4 text-left hover:border-amber-300 hover:shadow-md transition"
+          class="fresh-card fresh-card--upstairs w-full min-w-[280px] shrink-0 snap-start rounded-2xl p-4 text-left transition md:min-w-0 h-full flex flex-col"
         >
-          <div class="flex items-center justify-between">
+          <div class="flex items-start justify-between gap-3">
             <div>
-              <p class="text-base font-bold text-slate-900">楼上座位分布</p>
-              <p class="text-xs text-slate-600 mt-1">点击查看楼上座位图（单座位左键开台，多人模式左键点选后确认）</p>
+              <p class="text-base font-bold text-indigo-900">楼上座位分布</p>
+              <p class="mt-1 text-xs text-sky-700/85">点击查看楼上座位图（单座位左键开台，多人模式左键点选后确认）</p>
             </div>
-            <div class="text-right">
-              <p class="text-xs text-slate-500">总座位 {{ upstairsSeatSummary.total }}</p>
-              <p class="text-sm font-semibold text-emerald-700">剩余 {{ upstairsSeatSummary.available }}</p>
-              <p class="text-sm font-semibold text-rose-700">占用 {{ upstairsSeatSummary.occupied }}</p>
+            <span class="fresh-card__tag rounded-full px-2 py-0.5 text-[11px] font-semibold">Upstairs</span>
+          </div>
+          <div class="mt-4 grid grid-cols-3 gap-2 text-center mt-auto">
+            <div class="fresh-stat fresh-stat--total rounded-xl px-2 py-2">
+              <p class="text-[11px] text-slate-500">总座位</p>
+              <p class="mt-1 text-lg font-bold text-slate-900">{{ upstairsSeatSummary.total }}</p>
+            </div>
+            <div class="fresh-stat fresh-stat--available rounded-xl px-2 py-2">
+              <p class="text-[11px] text-cyan-700">剩余</p>
+              <p class="mt-1 text-lg font-bold text-cyan-900">{{ upstairsSeatSummary.available }}</p>
+            </div>
+            <div class="fresh-stat fresh-stat--occupied rounded-xl px-2 py-2">
+              <p class="text-[11px] text-pink-700">占用</p>
+              <p class="mt-1 text-lg font-bold text-pink-900">{{ upstairsSeatSummary.occupied }}</p>
             </div>
           </div>
         </button>
       </div>
     </section>
+
+    <Teleport to="body">
+      <div
+        v-if="showSeatOverviewModal"
+        class="fixed inset-0 bg-black bg-opacity-55 flex items-center justify-center z-40 p-4"
+        @mousedown="onBackdropMouseDown('timers-seat-overview', $event)"
+        @mouseup="onBackdropMouseUp('timers-seat-overview', $event) && closeSeatOverviewModal()"
+      >
+        <div class="w-full max-w-7xl max-h-[92vh] overflow-y-auto rounded-[28px] border border-slate-200 bg-white shadow-2xl">
+          <div class="sticky top-0 z-10 border-b border-slate-200 bg-[radial-gradient(circle_at_top_left,_rgba(56,189,248,0.18),_transparent_30%),linear-gradient(135deg,#f8fafc,#eef6ff_45%,#f0fdfa)] px-6 py-5 backdrop-blur">
+            <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <p class="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">Seat Overview</p>
+                <h3 class="mt-1 text-2xl font-black tracking-tight text-slate-900">全场座位总览</h3>
+                <p class="mt-2 text-sm text-slate-600">在一个界面里查看四个房间并跨房间选座，适合多人套餐快速拼桌。</p>
+              </div>
+              <div class="flex items-start gap-3">
+                <div class="grid grid-cols-3 gap-2">
+                  <div class="rounded-2xl border border-slate-200 bg-white/80 px-3 py-2 text-center shadow-sm">
+                    <p class="text-[11px] text-slate-500">总座位</p>
+                    <p class="mt-1 text-lg font-bold text-slate-900">{{ overallSeatSummary.total }}</p>
+                  </div>
+                  <div class="rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-center shadow-sm">
+                    <p class="text-[11px] text-emerald-600">剩余</p>
+                    <p class="mt-1 text-lg font-bold text-emerald-700">{{ overallSeatSummary.available }}</p>
+                  </div>
+                  <div class="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-center shadow-sm">
+                    <p class="text-[11px] text-rose-600">占用</p>
+                    <p class="mt-1 text-lg font-bold text-rose-700">{{ overallSeatSummary.occupied }}</p>
+                  </div>
+                </div>
+                <button
+                  @click="closeSeatOverviewModal"
+                  class="rounded-xl border border-slate-200 bg-white p-2 text-slate-400 hover:text-slate-700"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="p-5">
+            <div class="mb-4 rounded-3xl border border-slate-200 bg-[linear-gradient(135deg,rgba(15,23,42,0.98),rgba(30,41,59,0.95)_45%,rgba(8,145,178,0.9))] px-4 py-4 text-white shadow-lg">
+              <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                <div>
+                  <p class="text-sm font-semibold text-cyan-100">总览操作台</p>
+                  <p class="mt-1 text-xs text-slate-200">
+                    {{ seatLayoutEditMode ? '管理员可直接修改每个固定槽位的业务编号，布局不会变化。' : '单座位直接左键开台；多人模式下左键点选或取消，选好后统一确认。' }}
+                  </p>
+                </div>
+                <div class="flex flex-wrap items-center gap-2">
+                  <template v-if="seatLayoutEditMode && isAdmin">
+                    <button
+                      type="button"
+                      @click="saveSeatLayoutConfig"
+                      :disabled="seatLayoutSaving"
+                      class="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-900 hover:bg-slate-100 disabled:cursor-not-allowed disabled:bg-white/40 disabled:text-slate-500"
+                    >
+                      {{ seatLayoutSaving ? '保存中...' : '保存编号' }}
+                    </button>
+                    <button
+                      type="button"
+                      @click="cancelSeatLayoutEdit"
+                      :disabled="seatLayoutSaving"
+                      class="rounded-xl border border-white/20 px-3 py-2 text-xs font-semibold text-white hover:bg-white/10 disabled:cursor-not-allowed disabled:text-slate-300"
+                    >
+                      取消编辑
+                    </button>
+                  </template>
+                  <template v-else>
+                    <button
+                      type="button"
+                      @click="deactivateMultiSeatSelectionMode()"
+                      :class="[
+                        'rounded-xl px-3 py-2 text-xs font-semibold transition-colors',
+                        seatSelectionMode === 'single'
+                          ? 'bg-white text-slate-900'
+                          : 'border border-white/25 text-white hover:bg-white/10'
+                      ]"
+                    >
+                      单座位开台
+                    </button>
+                    <button
+                      type="button"
+                      @click="activateMultiSeatSelectionMode"
+                      :class="[
+                        'rounded-xl px-3 py-2 text-xs font-semibold transition-colors',
+                        seatSelectionMode === 'multi'
+                          ? 'bg-cyan-300 text-slate-950'
+                          : 'border border-cyan-200/40 text-cyan-50 hover:bg-cyan-300/10'
+                      ]"
+                    >
+                      多人选座
+                    </button>
+                    <button
+                      v-if="isAdmin"
+                      type="button"
+                      @click="startSeatLayoutEdit"
+                      class="rounded-xl border border-amber-200/50 px-3 py-2 text-xs font-semibold text-amber-50 hover:bg-amber-300/10"
+                    >
+                      编辑编号
+                    </button>
+                  </template>
+                </div>
+              </div>
+
+              <div v-if="seatLayoutEditMode" class="mt-4 rounded-2xl border border-white/15 bg-white/10 px-4 py-3 text-sm text-slate-100">
+                <p>固定槽位不会移动，只改业务编号。保存后，正在计时的座位编号会同步更新。</p>
+                <p v-if="Object.keys(seatLayoutDraftErrors).length > 0" class="mt-1 text-amber-100">
+                  当前有 {{ Object.keys(seatLayoutDraftErrors).length }} 处编号冲突或格式错误。
+                </p>
+              </div>
+
+              <div v-else-if="seatSelectionMode === 'multi'" class="mt-4 rounded-2xl border border-white/15 bg-white/10 px-4 py-3">
+                <p v-if="pendingMultiSeatCount > 0" class="text-sm font-semibold text-white">已选座位：{{ getPendingSeatDisplayText() }}</p>
+                <p v-else class="text-sm text-slate-100">请直接在下方四个房间里点选座位，再次点击已选座位可取消。</p>
+                <p v-if="pendingMultiSeatCount >= 2 && pendingMultiSeatPreset" class="mt-1 text-xs text-cyan-100">
+                  将匹配 {{ pendingMultiSeatPreset.peopleCount }}人套餐，确认后自动预填到新增消费。
+                </p>
+                <p v-else-if="pendingMultiSeatCount >= 2" class="mt-1 text-xs text-amber-100">
+                  当前已选 {{ pendingMultiSeatCount }} 个座位，但未配置对应套餐。
+                </p>
+                <div class="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    @click="confirmPendingMultiSeatSelection"
+                    :disabled="pendingMultiSeatCount < 2 || !pendingMultiSeatPreset"
+                    class="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-900 hover:bg-slate-100 disabled:cursor-not-allowed disabled:bg-white/40 disabled:text-slate-500"
+                  >
+                    确认多人选座
+                  </button>
+                  <button
+                    type="button"
+                    @click="clearPendingMultiSeatSelection"
+                    class="rounded-xl border border-white/20 px-3 py-2 text-xs font-semibold text-white hover:bg-white/10"
+                  >
+                    清空已选
+                  </button>
+                  <button
+                    type="button"
+                    @click="deactivateMultiSeatSelectionMode(true)"
+                    class="rounded-xl border border-white/20 px-3 py-2 text-xs font-semibold text-white hover:bg-white/10"
+                  >
+                    退出多人模式
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 2xl:grid-cols-2 gap-4">
+              <section
+                v-for="section in seatOverviewSections"
+                :key="`overview-${section.key}`"
+                :class="['rounded-3xl border p-4 shadow-sm', section.panelClass]"
+              >
+                <div class="mb-4 flex items-start justify-between gap-3">
+                  <div>
+                    <div class="flex items-center gap-2">
+                      <h4 class="text-lg font-black tracking-tight text-slate-900">{{ section.title }}</h4>
+                      <span :class="['rounded-full px-2 py-0.5 text-[11px] font-semibold', section.badgeClass]">{{ section.subtitle }}</span>
+                    </div>
+                    <p class="mt-1 text-xs text-slate-600">剩余 {{ section.summary.available }} / 占用 {{ section.summary.occupied }} / 总计 {{ section.summary.total }}</p>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-1 gap-4">
+                  <article
+                    v-for="table in section.tables"
+                    :key="`overview-${section.key}-${table.area}`"
+                    :class="[
+                      'rounded-2xl border p-3 shadow-sm transition-all backdrop-blur-sm',
+                      table.occupiedCount > 0 ? 'border-red-300 bg-white/95' : 'border-emerald-200 bg-white/95'
+                    ]"
+                  >
+                    <div class="flex items-center justify-between mb-2">
+                      <p class="text-sm font-bold text-gray-900">{{ table.area }}桌</p>
+                      <p :class="['text-xs font-semibold px-2 py-0.5 rounded-full', table.occupiedCount > 0 ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700']">
+                        {{ table.occupiedCount > 0 ? `已坐 ${table.occupiedCount}/${table.seatCount}` : '当前全空' }}
+                      </p>
+                    </div>
+                    <div
+                      :class="[
+                        'mx-auto rounded-2xl border-2 border-slate-300 bg-gradient-to-b from-slate-100 to-slate-200 px-3 py-3 shadow-inner',
+                        section.key === 'garden' && table.area === 'K'
+                          ? 'max-w-[220px]'
+                          : table.shape === 'square'
+                            ? 'max-w-[180px]'
+                            : table.shape === 'tall'
+                              ? 'max-w-[140px]'
+                              : section.key === 'upstairs'
+                                ? 'max-w-[210px]'
+                                : 'max-w-[240px]'
+                      ]"
+                    >
+                      <div
+                        :class="[
+                          section.key === 'garden' && isGardenKTable(table.area)
+                            ? 'grid grid-cols-4 grid-rows-3 gap-1.5 h-[126px] items-center justify-items-center'
+                            : section.key === 'upstairs'
+                              ? 'grid grid-cols-3 grid-rows-3 gap-1.5 h-[126px] items-center justify-items-center'
+                              : 'grid gap-2'
+                        ]"
+                        :style="(section.key === 'garden' && isGardenKTable(table.area)) || section.key === 'upstairs'
+                          ? undefined
+                          : { gridTemplateColumns: `repeat(${table.seatColumns || 3}, minmax(0, 1fr))` }"
+                      >
+                        <button
+                          v-for="seat in table.seats"
+                          :key="`overview-${section.key}-${table.area}-${seat.seatNo}`"
+                          type="button"
+                          @click="handleSeatLeftClick(seat)"
+                          :class="[
+                            'relative rounded-lg border flex items-center justify-center font-bold transition-colors',
+                            section.key === 'upstairs'
+                              ? 'h-12 w-12 text-sm'
+                              : section.key === 'garden' && isGardenKTable(table.area)
+                                ? 'h-10 w-10 text-[12px]'
+                                : 'h-10 text-[12px]',
+                            section.key === 'garden' ? getGardenSeatGridPositionClass(table.area, seat.seatNo) : '',
+                            section.key === 'upstairs' ? getUpstairsSeatGridPositionClass(seat.seatNo) : '',
+                            isPendingSeatSelected(seat.tableNo)
+                              ? 'ring-2 ring-blue-600 ring-offset-2 ring-offset-slate-200'
+                              : '',
+                            seat.occupied
+                              ? 'bg-red-600 border-red-700 text-white'
+                              : 'bg-white border-slate-300 text-slate-800 hover:bg-slate-50 cursor-pointer'
+                          ]"
+                          :title="seat.occupied ? `${seat.customerName || '已占用'}（${seat.displayLabel}）` : `${seat.displayLabel} 空位`"
+                        >
+                          {{ seat.displayCode }}
+                          <span
+                            :class="[
+                              section.key === 'upstairs' ? 'absolute top-1 right-1 h-2.5 w-2.5 rounded-full' : 'absolute top-1.5 right-1.5 h-2.5 w-2.5 rounded-full',
+                              seat.occupied ? 'bg-rose-200' : 'bg-emerald-500'
+                            ]"
+                          ></span>
+                        </button>
+                      </div>
+                    </div>
+                    <div v-if="seatLayoutEditMode && isAdmin" class="mt-3 space-y-2">
+                      <div
+                        v-for="seat in table.seats"
+                        :key="`overview-edit-${section.key}-${table.area}-${seat.slotKey}`"
+                        class="rounded-xl border border-slate-200 bg-white/90 px-3 py-2"
+                      >
+                        <div class="flex items-center justify-between gap-3">
+                          <div>
+                            <p class="text-xs font-semibold text-slate-700">固定槽位 {{ table.area }}-{{ seat.seatNo }}</p>
+                            <p class="text-[11px] text-slate-500">当前编号 {{ seat.displayLabel }}</p>
+                          </div>
+                          <div class="grid grid-cols-2 gap-2">
+                            <select
+                              :value="seatLayoutDraft.slots?.[seat.slotKey]?.tableArea || ''"
+                              class="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              @change="updateSeatLayoutDraftValue(seat.slotKey, 'tableArea', $event.target.value)"
+                            >
+                              <option v-for="area in tableAreaOptions" :key="`seat-edit-area-${seat.slotKey}-${area}`" :value="area">
+                                {{ area }}桌
+                              </option>
+                            </select>
+                            <select
+                              :value="seatLayoutDraft.slots?.[seat.slotKey]?.tableSeat || ''"
+                              class="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              @change="updateSeatLayoutDraftValue(seat.slotKey, 'tableSeat', $event.target.value)"
+                            >
+                              <option v-for="seatNo in tableSeatOptions" :key="`seat-edit-seat-${seat.slotKey}-${seatNo}`" :value="seatNo">
+                                {{ seatNo }}号
+                              </option>
+                            </select>
+                          </div>
+                        </div>
+                        <p v-if="getSeatLayoutDraftError(seat.slotKey)" class="mt-1 text-[11px] text-rose-600">
+                          {{ getSeatLayoutDraftError(seat.slotKey) }}
+                        </p>
+                      </div>
+                    </div>
+                    <div class="mt-2 text-xs text-gray-600">
+                      <span v-if="table.occupiedCount > 0">深红座位为占用，浅红座位可开台</span>
+                      <span v-else>全部可开台</span>
+                    </div>
+                  </article>
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <Teleport to="body">
       <div
@@ -2583,19 +3105,19 @@ onUnmounted(() => {
                       v-for="seat in table.seats"
                       :key="`${table.area}-${seat.seatNo}`"
                       type="button"
-                      @click="handleSeatLeftClick(table.area, seat.seatNo, seat.occupied)"
+                      @click="handleSeatLeftClick(seat)"
                       :class="[
                         'relative h-10 rounded-lg border flex items-center justify-center text-[12px] font-bold transition-colors',
-                        isPendingSeatSelected(table.area, seat.seatNo)
+                        isPendingSeatSelected(seat.tableNo)
                           ? 'ring-2 ring-blue-600 ring-offset-2 ring-offset-slate-200'
                           : '',
                         seat.occupied
                           ? 'bg-red-600 border-red-700 text-white'
                           : 'bg-white border-slate-300 text-slate-800 hover:bg-slate-50 cursor-pointer'
                       ]"
-                      :title="seat.occupied ? `${seat.customerName || '已占用'}（${table.area}${seat.seatNo}）` : `${table.area}${seat.seatNo} 空位`"
+                      :title="seat.occupied ? `${seat.customerName || '已占用'}（${seat.displayLabel}）` : `${seat.displayLabel} 空位`"
                     >
-                      {{ seat.seatNo }}
+                      {{ seat.displayCode }}
                       <span
                         :class="[
                           'absolute top-1.5 right-1.5 h-2.5 w-2.5 rounded-full',
@@ -2730,19 +3252,19 @@ onUnmounted(() => {
                       v-for="seat in table.seats"
                       :key="`small-${table.area}-${seat.seatNo}`"
                       type="button"
-                      @click="handleSeatLeftClick(table.area, seat.seatNo, seat.occupied)"
+                      @click="handleSeatLeftClick(seat)"
                       :class="[
                         'relative h-10 rounded-lg border flex items-center justify-center text-[12px] font-bold transition-colors',
-                        isPendingSeatSelected(table.area, seat.seatNo)
+                        isPendingSeatSelected(seat.tableNo)
                           ? 'ring-2 ring-blue-600 ring-offset-2 ring-offset-slate-200'
                           : '',
                         seat.occupied
                           ? 'bg-red-600 border-red-700 text-white'
                           : 'bg-white border-slate-300 text-slate-800 hover:bg-slate-50 cursor-pointer'
                       ]"
-                      :title="seat.occupied ? `${seat.customerName || '已占用'}（${table.area}${seat.seatNo}）` : `${table.area}${seat.seatNo} 空位`"
+                      :title="seat.occupied ? `${seat.customerName || '已占用'}（${seat.displayLabel}）` : `${seat.displayLabel} 空位`"
                     >
-                      {{ seat.seatNo }}
+                      {{ seat.displayCode }}
                       <span
                         :class="[
                           'absolute top-1.5 right-1.5 h-2.5 w-2.5 rounded-full',
@@ -2887,21 +3409,21 @@ onUnmounted(() => {
                       v-for="seat in table.seats"
                       :key="`garden-${table.area}-${seat.seatNo}`"
                       type="button"
-                      @click="handleSeatLeftClick(table.area, seat.seatNo, seat.occupied)"
+                      @click="handleSeatLeftClick(seat)"
                       :class="[
                         'relative rounded-lg border flex items-center justify-center text-[12px] font-bold transition-colors',
                         isGardenKTable(table.area) ? 'h-10 w-10' : 'h-10',
                         getGardenSeatGridPositionClass(table.area, seat.seatNo),
-                        isPendingSeatSelected(table.area, seat.seatNo)
+                        isPendingSeatSelected(seat.tableNo)
                           ? 'ring-2 ring-blue-600 ring-offset-2 ring-offset-slate-200'
                           : '',
                         seat.occupied
                           ? 'bg-red-600 border-red-700 text-white'
                           : 'bg-white border-slate-300 text-slate-800 hover:bg-slate-50 cursor-pointer'
                       ]"
-                      :title="seat.occupied ? `${seat.customerName || '已占用'}（${table.area}${seat.seatNo}）` : `${table.area}${seat.seatNo} 空位`"
+                      :title="seat.occupied ? `${seat.customerName || '已占用'}（${seat.displayLabel}）` : `${seat.displayLabel} 空位`"
                     >
-                      {{ seat.seatNo }}
+                      {{ seat.displayCode }}
                       <span
                         :class="[
                           'absolute top-1.5 right-1.5 h-2.5 w-2.5 rounded-full',
@@ -3035,20 +3557,20 @@ onUnmounted(() => {
                       v-for="seat in table.seats"
                       :key="`upstairs-${table.area}-${seat.seatNo}`"
                       type="button"
-                      @click="handleSeatLeftClick(table.area, seat.seatNo, seat.occupied)"
+                      @click="handleSeatLeftClick(seat)"
                       :class="[
                         'relative h-12 w-12 rounded-lg border flex items-center justify-center text-sm font-bold transition-colors',
                         getUpstairsSeatGridPositionClass(seat.seatNo),
-                        isPendingSeatSelected(table.area, seat.seatNo)
+                        isPendingSeatSelected(seat.tableNo)
                           ? 'ring-2 ring-blue-600 ring-offset-2 ring-offset-slate-200'
                           : '',
                         seat.occupied
                           ? 'bg-red-600 border-red-700 text-white'
                           : 'bg-white border-slate-300 text-slate-800 hover:bg-slate-50 cursor-pointer'
                       ]"
-                      :title="seat.occupied ? `${seat.customerName || '已占用'}（${table.area}${seat.seatNo}）` : `${table.area}${seat.seatNo} 空位`"
+                      :title="seat.occupied ? `${seat.customerName || '已占用'}（${seat.displayLabel}）` : `${seat.displayLabel} 空位`"
                     >
-                      {{ seat.seatNo }}
+                      {{ seat.displayCode }}
                       <span
                         :class="[
                           'absolute top-1 right-1 h-2.5 w-2.5 rounded-full',
@@ -3196,6 +3718,7 @@ onUnmounted(() => {
               :customer-options="addTimerCustomerOptions"
               :enabled-misc-items="enabledMiscItems"
               :billing-rules="billingRules"
+              :seat-layout-config="seatLayoutConfig"
               @update:model-value="applyAddForm"
             />
           </div>
@@ -3226,30 +3749,18 @@ onUnmounted(() => {
           <div class="p-6 space-y-4">
             <div>
               <label class="block text-sm font-medium text-gray-700 mb-1">第1座位</label>
-              <div class="grid grid-cols-2 gap-3">
-                <select
-                  v-model="editForm.tableArea"
-                  :class="[
-                    'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-                    editErrors.tableNo ? 'border-red-500' : 'border-gray-300'
-                  ]"
-                >
-                  <option v-for="area in tableAreaOptions" :key="area" :value="area">
-                    {{ area }}桌
-                  </option>
-                </select>
-                <select
-                  v-model="editForm.tableSeat"
-                  :class="[
-                    'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-                    editErrors.tableNo ? 'border-red-500' : 'border-gray-300'
-                  ]"
-                >
-                  <option v-for="seat in tableSeatOptions" :key="seat" :value="seat">
-                    {{ seat }}号
-                  </option>
-                </select>
-              </div>
+              <select
+                :value="editForm.tableNo"
+                :class="[
+                  'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
+                  editErrors.tableNo ? 'border-red-500' : 'border-gray-300'
+                ]"
+                @change="updateEditPrimarySeat($event.target.value)"
+              >
+                <option v-for="seat in seatOptions" :key="seat.slotKey" :value="seat.tableNo">
+                  {{ seat.label }}
+                </option>
+              </select>
               <p v-if="editErrors.tableNo" class="text-red-500 text-xs mt-1">{{ editErrors.tableNo }}</p>
             </div>
 
@@ -3264,33 +3775,19 @@ onUnmounted(() => {
                 <label class="block text-sm font-medium text-gray-700 mb-1">
                   第{{ index + 2 }}座位
                 </label>
-                <div class="grid grid-cols-2 gap-3">
-                  <select
-                    :value="seat.tableArea || editForm.tableArea"
-                    :class="[
-                      'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-                      getEditExtraSeatError(index) ? 'border-red-500' : 'border-gray-300'
-                    ]"
-                    @change="updateEditExtraSeatArea(index, $event.target.value)"
-                  >
-                    <option v-for="area in tableAreaOptions" :key="`edit-extra-area-${index}-${area}`" :value="area">
-                      {{ area }}桌
-                    </option>
-                  </select>
-                  <select
-                    :value="seat.tableSeat"
-                    :class="[
-                      'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-                      getEditExtraSeatError(index) ? 'border-red-500' : 'border-gray-300'
-                    ]"
-                    @change="updateEditExtraSeatSeat(index, $event.target.value)"
-                  >
-                    <option value="">请选择号位</option>
-                    <option v-for="seatNo in tableSeatOptions" :key="`edit-extra-seat-${index}-${seatNo}`" :value="seatNo">
-                      {{ seatNo }}号
-                    </option>
-                  </select>
-                </div>
+                <select
+                  :value="seat.tableNo"
+                  :class="[
+                    'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
+                    getEditExtraSeatError(index) ? 'border-red-500' : 'border-gray-300'
+                  ]"
+                  @change="updateEditExtraSeat(index, $event.target.value)"
+                >
+                  <option value="">请选择座位</option>
+                  <option v-for="option in seatOptions" :key="`edit-extra-seat-${index}-${option.slotKey}`" :value="option.tableNo">
+                    {{ option.label }}
+                  </option>
+                </select>
                 <p v-if="getEditExtraSeatError(index)" class="text-red-500 text-xs mt-1">
                   {{ getEditExtraSeatError(index) }}
                 </p>
@@ -3372,7 +3869,7 @@ onUnmounted(() => {
               <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div v-for="item in enabledMiscItems" :key="`edit-misc-${item.id}`">
                   <label class="block text-sm font-medium text-gray-700 mb-1">
-                    {{ item.name }}（¥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
+                    {{ item.name }}（￥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
                   </label>
                   <p class="text-xs text-slate-500 mb-1">可用库存：{{ formatMiscStock(item) }}</p>
                   <input
@@ -3512,7 +4009,7 @@ onUnmounted(() => {
               <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div v-for="item in enabledMiscItems" :key="item.id">
                   <label class="block text-sm font-medium text-gray-700 mb-1">
-                    {{ item.name }}（¥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
+                    {{ item.name }}（￥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
                   </label>
                   <p class="text-xs text-slate-500 mb-1">可用库存：{{ formatMiscStock(item) }}</p>
                   <input
@@ -3595,4 +4092,86 @@ onUnmounted(() => {
     </Teleport>
   </div>
 </template>
+
+<style scoped>
+.fresh-card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  box-shadow: 0 12px 30px -18px rgba(56, 189, 248, 0.45), 0 14px 34px -20px rgba(244, 114, 182, 0.38);
+  backdrop-filter: blur(4px);
+}
+
+.fresh-card::before {
+  content: '';
+  position: absolute;
+  inset: -35% auto auto -18%;
+  width: 210px;
+  height: 210px;
+  border-radius: 9999px;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.78) 0%, rgba(255, 255, 255, 0) 72%);
+  pointer-events: none;
+}
+
+.fresh-card::after {
+  content: '';
+  position: absolute;
+  right: -62px;
+  bottom: -86px;
+  width: 210px;
+  height: 210px;
+  border-radius: 9999px;
+  background: radial-gradient(circle, rgba(186, 230, 253, 0.42) 0%, rgba(186, 230, 253, 0) 70%);
+  pointer-events: none;
+}
+
+.fresh-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 18px 34px -18px rgba(56, 189, 248, 0.55), 0 18px 36px -20px rgba(244, 114, 182, 0.45);
+}
+
+.fresh-card--living {
+  background: linear-gradient(142deg, #f6fbff 0%, #e6f7ff 46%, #fdf4ff 100%);
+}
+
+.fresh-card--overview {
+  background: linear-gradient(142deg, #f7fbff 0%, #e0f2fe 44%, #fce7f3 100%);
+}
+
+.fresh-card--small {
+  background: linear-gradient(142deg, #f8fbff 0%, #e0f2fe 40%, #fce7f3 100%);
+}
+
+.fresh-card--garden {
+  background: linear-gradient(142deg, #f5fbff 0%, #dbeafe 35%, #fce7f3 100%);
+}
+
+.fresh-card--upstairs {
+  background: linear-gradient(142deg, #f3f9ff 0%, #dbeafe 42%, #f9e9ff 100%);
+}
+
+.fresh-card__tag {
+  border: 1px solid rgba(125, 211, 252, 0.55);
+  color: #0f766e;
+  background: rgba(255, 255, 255, 0.66);
+  backdrop-filter: blur(2px);
+}
+
+.fresh-stat {
+  border: 1px solid rgba(186, 230, 253, 0.75);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.fresh-stat--total {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.fresh-stat--available {
+  background: linear-gradient(180deg, rgba(240, 253, 250, 0.84) 0%, rgba(207, 250, 254, 0.64) 100%);
+}
+
+.fresh-stat--occupied {
+  background: linear-gradient(180deg, rgba(253, 242, 248, 0.84) 0%, rgba(252, 231, 243, 0.7) 100%);
+}
+</style>
 

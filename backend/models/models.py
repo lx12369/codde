@@ -13,11 +13,24 @@ def _strip_misc_marker(description):
     return MISC_MARKER_PATTERN.sub('', text).strip()
 
 
+def _calculate_transaction_balance_delta(transaction):
+    tx_type = str(getattr(transaction, 'type', '') or '').strip().lower()
+    amount = float(getattr(transaction, 'amount', 0.0) or 0.0)
+    bonus_amount = float(getattr(transaction, 'bonus_amount', 0.0) or 0.0)
+
+    if tx_type == 'recharge':
+        return amount + bonus_amount
+    if tx_type == 'consumption':
+        return -amount
+    return 0.0
+
+
 class User(db.Model):
     __tablename__ = 'users'
 
     id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(50), unique=True, nullable=False)
+    account = db.Column(db.String(191), unique=True, nullable=False)
+    username = db.Column(db.String(50), nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
     role = db.Column(db.String(20), default='admin')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -26,6 +39,7 @@ class User(db.Model):
     def to_dict(self):
         return {
             'id': self.id,
+            'account': self.account,
             'username': self.username,
             'role': self.role,
             'created_at': self.created_at.isoformat() if self.created_at else None,
@@ -120,11 +134,13 @@ class Transaction(db.Model):
 
     def to_dict(self):
         status = str(self.status or '').strip().lower() or 'completed'
+        balance_delta = _calculate_transaction_balance_delta(self)
         return {
             'id': self.id,
             'customer_id': self.customer_id,
             'type': self.type,
             'amount': self.amount,
+            'balance_delta': balance_delta,
             'bonus_amount': self.bonus_amount,
             'payment_method': self.payment_method,
             'description': _strip_misc_marker(self.description),
@@ -186,15 +202,32 @@ class BillingRule(db.Model):
         }
 
 
+class SeatLayoutConfig(db.Model):
+    __tablename__ = 'seat_layout_configs'
+
+    id = db.Column(db.Integer, primary_key=True)
+    config_key = db.Column(db.String(50), unique=True, nullable=False)
+    config_data = db.Column(db.JSON)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'config_key': self.config_key,
+            'config_data': self.config_data,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+        }
+
+
 class ActiveTimer(db.Model):
     __tablename__ = 'active_timers'
 
-    id = db.Column(db.String(20), primary_key=True)
+    id = db.Column(db.String(32), primary_key=True)
     customer_id = db.Column(db.String(10), db.ForeignKey('customers.id'), nullable=False)
     table_no = db.Column(db.String(30))
     start_time = db.Column(db.DateTime, nullable=False)
     timer_type = db.Column(db.String(50))
-    notes = db.Column(db.String(255))
+    notes = db.Column(db.Text)
     status = db.Column(db.String(20), default='active')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 

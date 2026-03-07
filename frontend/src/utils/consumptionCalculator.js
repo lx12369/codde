@@ -1,4 +1,4 @@
-﻿import { getEffectiveBillingDayType } from '@/utils/dayType'
+import { getEffectiveBillingDayType } from '@/utils/dayType'
 
 const DEFAULT_UNLIMITED_PACKAGES = {
   weekday: [
@@ -563,7 +563,7 @@ function calculateTieredOvertime(overtimeMinutes, limitedRules) {
   if (minutes <= 30) {
     return {
       fee: fee10to30,
-      detail: `超时${minutes}分钟(+¥${fee10to30.toFixed(2)})`,
+      detail: `超时${minutes}分钟(+￥${fee10to30.toFixed(2)})`,
       billedHours: 0
     }
   }
@@ -608,7 +608,7 @@ function calculateLimitedByTotalMinutes(totalMinutes, limitedRules) {
     overtimeMinutes = minutes - 60
     overtimeFee = fee10to30
     details.push('限时1小时')
-    details.push(`超时${overtimeMinutes}分钟(+¥${fee10to30.toFixed(2)})`)
+    details.push(`超时${overtimeMinutes}分钟(+￥${fee10to30.toFixed(2)})`)
     return { baseFee, overtimeFee, overtimeMinutes, details }
   }
 
@@ -774,7 +774,7 @@ export function calculateConsumptionAmount(options = {}, rawRules = {}) {
   if (miscDetails.length > 0) details.push(`杂项${miscDetails.join('、')}`)
 
   if (additionalFee > 0) {
-    details.push(`附加费用¥${additionalFee.toFixed(2)}`)
+    details.push(`附加费用￥${additionalFee.toFixed(2)}`)
   }
 
   const total = round2(baseFee + overtimeFee + materialFee + miscFee + additionalFee)
@@ -808,6 +808,7 @@ export function calculateConsumptionAmount(options = {}, rawRules = {}) {
 export function buildConsumptionDescription(meta = {}, calcResult = {}, notes = '') {
   const mode = meta.mode || 'auto'
   const billingTypeLabel = getBillingTypeLabel(meta.billingType || calcResult.billingType)
+  const tableLabel = String(meta.tableLabel || '').trim()
   const parts = []
 
   if (mode === 'timer') {
@@ -818,6 +819,10 @@ export function buildConsumptionDescription(meta = {}, calcResult = {}, notes = 
     parts.push(`${hours}小时${minutes}分钟`)
   } else {
     parts.push(`自动结算(${billingTypeLabel})`)
+  }
+
+  if (tableLabel) {
+    parts.push(`桌号: ${tableLabel}`)
   }
 
   const detailParts = calcResult.details || []

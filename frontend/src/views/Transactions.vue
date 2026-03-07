@@ -12,6 +12,7 @@ import {
   getDefaultTimerPackagePlan,
   getTimerPackagePlanOptions
 } from '@/utils/timerConsume'
+import { useSeatLayoutConfigState } from '@/utils/seatLayoutState'
 import {
   normalizeBillingRules,
   calculateConsumptionAmount,
@@ -24,10 +25,34 @@ import {
 const route = useRoute()
 const router = useRouter()
 const { onBackdropMouseDown, onBackdropMouseUp } = useBackdropClose()
+const { seatLayoutConfig, loadSeatLayoutConfig } = useSeatLayoutConfigState()
 const DEFAULT_OVERTIME_RATE_PER_MINUTE = 0.5
 const OVERTIME_START_HOUR = 19
 const OVERTIME_START_MINUTE = 30
 const DAY_MS = 24 * 60 * 60 * 1000
+const EXPIRED_TRANSACTION_STATUS = 'expired'
+
+const isExpiredMode = computed(() => route.meta?.transactionScope === 'expired')
+const pageEyebrow = computed(() => (
+  isExpiredMode.value ? 'Expired Transaction Workspace' : 'Transaction Workspace'
+))
+const pageTitle = computed(() => (
+  isExpiredMode.value ? '过期交易' : '交易记录'
+))
+const pageLoadingText = computed(() => (
+  isExpiredMode.value ? '正在加载过期交易数据...' : '正在加载交易数据...'
+))
+const pageEmptyText = computed(() => (
+  isExpiredMode.value ? '暂无过期交易' : '暂无交易记录'
+))
+const pageFetchErrorText = computed(() => (
+  isExpiredMode.value ? '获取过期交易失败，请稍后重试。' : '获取交易记录失败，请稍后重试。'
+))
+const pageDescription = computed(() => (
+  isExpiredMode.value
+    ? '仅展示重新结算后被替换并归档的旧交易记录。'
+    : '管理充值、消费与支出记录，支持查看详情、取消交易与计时消费重新结算。'
+))
 
 const loading = ref(false)
 const cancellingTransactionId = ref('')
@@ -43,7 +68,8 @@ const filterForm = reactive({
   type: '',
   startDate: '',
   endDate: '',
-  customerKeyword: ''
+  customerKeyword: '',
+  descriptionKeyword: ''
 })
 
 const showRechargeDialog = ref(false)
@@ -55,6 +81,8 @@ const showCancelConfirmDialog = ref(false)
 const selectedTransaction = ref(null)
 const timerEditTargetTransaction = ref(null)
 const timerEditStartTimestamp = ref(null)
+const timerEditTableLabel = ref('')
+const timerEditOriginalHadOvertimeNote = ref(false)
 const cancelTargetTransaction = ref(null)
 const cancelConfirmButtonRef = ref(null)
 const timerEditAmountInputRef = ref(null)
@@ -77,11 +105,12 @@ const expenseForm = reactive({
   description: ''
 })
 
-const consumeMode = ref('manual')
+const consumeMode = ref('timer')
 
 const manualConsumeForm = reactive({
   customerId: '',
   amount: '',
+  peopleCount: 1,
   description: '',
   miscSelections: {},
   meituanCustomer: false
@@ -103,7 +132,7 @@ const autoConsumeForm = reactive({
   meituanCustomer: false
 })
 
-const timerConsumeForm = reactive(createTimerConsumeForm())
+const timerConsumeForm = reactive(createTimerConsumeForm('', {}, seatLayoutConfig.value))
 const timerEditForm = reactive({
   elapsedMinutes: 60,
   billingType: 'limited',
@@ -118,6 +147,7 @@ const timerEditForm = reactive({
   additionalFee: 0,
   applyOvertimeFee: false,
   overtimeFeeMinutes: 0,
+  overtimePeopleCount: 1,
   notes: '',
   meituanCustomer: false
 })
@@ -268,6 +298,7 @@ const autoFinalAmount = computed(() =>
 )
 
 const timerEditOvertimeRatePerMinute = computed(() => getTimerEditConfiguredOvertimeRate())
+const timerEditOvertimePeopleCount = computed(() => Math.max(1, Math.floor(Number(timerEditForm.overtimePeopleCount) || 1)))
 
 const timerEditAutoOvertimeMinutes = computed(() => {
   const startMs = Number(timerEditStartTimestamp.value)
@@ -282,11 +313,19 @@ const timerEditAutoOvertimeMinutes = computed(() => {
   return calculateOvertimeMinutesByRange(startMs, endMs)
 })
 
+const timerEditOvertimeTotalRatePerMinute = computed(() => (
+  Math.round(((timerEditOvertimeRatePerMinute.value * timerEditOvertimePeopleCount.value) + Number.EPSILON) * 100) / 100
+))
+
+const timerEditOvertimeFeeByRule = computed(() => {
+  const minutes = timerEditAutoOvertimeMinutes.value
+  const totalRate = timerEditOvertimeTotalRatePerMinute.value
+  return Math.round(((minutes * totalRate) + Number.EPSILON) * 100) / 100
+})
+
 const timerEditOvertimeFee = computed(() => {
   if (!timerEditForm.applyOvertimeFee) return 0
-  const minutes = timerEditAutoOvertimeMinutes.value
-  const rate = timerEditOvertimeRatePerMinute.value
-  return Math.round(((minutes * rate) + Number.EPSILON) * 100) / 100
+  return timerEditOvertimeFeeByRule.value
 })
 
 const timerEditTotalAdditionalFee = computed(() => {
@@ -361,12 +400,17 @@ const normalizeTransaction = (transaction = {}) => ({
   customerName: transaction.customerName ?? transaction.customer_name ?? '',
   customerPhone: transaction.customerPhone ?? transaction.customer_phone ?? '',
   customerWechat: transaction.customerWechat ?? transaction.customer_wechat ?? '',
+  amount: Number(transaction.amount ?? 0),
+  balanceDelta: Number(transaction.balanceDelta ?? transaction.balance_delta ?? 0),
   bonusAmount: transaction.bonusAmount ?? transaction.bonus_amount ?? 0,
   paymentMethod: transaction.paymentMethod ?? transaction.payment_method ?? '',
   activityId: transaction.activityId ?? transaction.activity_id ?? null,
   createdAt: transaction.createdAt ?? transaction.created_at ?? transaction.transaction_time ?? null,
   operatorName: transaction.operatorName ?? transaction.operator_name ?? '',
   status: transaction.status ?? 'completed',
+  cancelledAt: transaction.cancelledAt ?? transaction.cancelled_at ?? null,
+  cancelReason: transaction.cancelReason ?? transaction.cancel_reason ?? '',
+  cancelledBy: transaction.cancelledBy ?? transaction.cancelled_by ?? '',
   miscSelections: transaction.miscSelections ?? transaction.misc_selections ?? {}
 })
 
@@ -399,12 +443,18 @@ function isTimerConsumptionTransaction(transaction = {}) {
 
 function canEditTimerConsumptionTransaction(transaction = {}) {
   const normalized = normalizeTransaction(transaction)
-  return Boolean(normalized?.id) && isTimerConsumptionTransaction(normalized)
+  if (!normalized?.id) return false
+  if (['cancelled', EXPIRED_TRANSACTION_STATUS].includes(String(normalized.status || '').trim().toLowerCase())) {
+    return false
+  }
+  return isTimerConsumptionTransaction(normalized)
 }
 
 const MISC_MARKER_PATTERN = /\s*\[\[MISC_B64:[A-Za-z0-9_-]+\]\]\s*$/
-const TIMER_OVERTIME_NOTE_PATTERN = /加班费用[¥￥]\s*(\d+(?:\.\d+)?)\s*[（(]\s*(\d+)\s*分钟\s*[，,]\s*[¥￥]\s*(\d+(?:\.\d+)?)\s*\/\s*分钟\s*[）)]/
-const TIMER_OVERTIME_CANCEL_NOTE_PATTERN = /已取消加班费用[（(]\s*(\d+)\s*分钟\s*[，,]\s*原[¥￥]\s*(\d+(?:\.\d+)?)\s*[）)]/
+const TIMER_TABLE_SECTION_PATTERN = /^桌号[:：]\s*(.+)$/
+const TIMER_TABLE_LABEL_INLINE_PATTERN = /[A-HJ-NP-Za-hj-np-z]桌([1-9]|[1-9][0-9]|100)号/g
+const TIMER_OVERTIME_NOTE_PATTERN = /加班费用[¥￥]\s*(\d+(?:\.\d+)?)\s*[（(]\s*(\d+)\s*分钟(?:\s*[，,]\s*(\d+)\s*人)?\s*[，,]\s*[¥￥]\s*(\d+(?:\.\d+)?)\s*(?:\/\s*人)?\s*\/\s*分钟\s*[）)]/
+const TIMER_OVERTIME_CANCEL_NOTE_PATTERN = /已取消加班费用[（(]\s*(\d+)\s*分钟(?:\s*[，,]\s*(\d+)\s*人)?\s*[，,]\s*原[¥￥]\s*(\d+(?:\.\d+)?)\s*[）)]/
 
 function stripMiscMarkerFromDescription(description = '') {
   return String(description || '').replace(MISC_MARKER_PATTERN, '').trim()
@@ -415,6 +465,20 @@ function splitTimerDescriptionSections(description = '') {
     .split(/\s+-\s+/)
     .map((segment) => String(segment || '').trim())
     .filter(Boolean)
+}
+
+function extractTimerTableLabelFromDescription(description = '') {
+  const section = splitTimerDescriptionSections(description).find((segment) => TIMER_TABLE_SECTION_PATTERN.test(segment))
+  if (!section) return ''
+  const matched = section.match(TIMER_TABLE_SECTION_PATTERN)
+  return normalizeTimerTableLabelForDescription(matched?.[1] || '')
+}
+
+function normalizeTimerTableLabelForDescription(value = '') {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  const normalized = raw.replace(TIMER_TABLE_LABEL_INLINE_PATTERN, '$1').trim()
+  return normalized.replace(/\s{2,}/g, ' ')
 }
 
 function parseElapsedMinutesFromDescription(description = '') {
@@ -444,6 +508,7 @@ function parseTimerDetailSectionFromDescription(description = '') {
   return sections
     .slice(1)
     .filter((segment) => !/^\d+\s*小时\s*\d+\s*分钟$/.test(segment))
+    .filter((segment) => !TIMER_TABLE_SECTION_PATTERN.test(segment))
     .filter((segment) => !segment.startsWith('备注:'))
     .join('，')
 }
@@ -512,20 +577,24 @@ function inferTimerNotesStateFromDescription(description = '') {
   const rawNotes = noteSection.replace(/^备注:\s*/, '').trim()
   const overtimeAppliedMatch = rawNotes.match(TIMER_OVERTIME_NOTE_PATTERN)
   const overtimeCanceledMatch = rawNotes.match(TIMER_OVERTIME_CANCEL_NOTE_PATTERN)
+  const hadOvertimeNote = Boolean(overtimeAppliedMatch || overtimeCanceledMatch)
 
   let applyOvertimeFee = false
   let overtimeFee = 0
   let overtimeFeeMinutes = 0
   let overtimeRatePerMinute = 0
+  let overtimePeopleCount = 1
   if (overtimeAppliedMatch) {
     applyOvertimeFee = true
     overtimeFee = Math.max(0, Number.parseFloat(overtimeAppliedMatch[1]) || 0)
     overtimeFeeMinutes = Math.max(0, Number.parseInt(overtimeAppliedMatch[2], 10) || 0)
-    overtimeRatePerMinute = Math.max(0, Number.parseFloat(overtimeAppliedMatch[3]) || 0)
+    overtimePeopleCount = Math.max(1, Number.parseInt(overtimeAppliedMatch[3], 10) || 1)
+    overtimeRatePerMinute = Math.max(0, Number.parseFloat(overtimeAppliedMatch[4]) || 0)
   } else if (overtimeCanceledMatch) {
     applyOvertimeFee = false
-    overtimeFee = Math.max(0, Number.parseFloat(overtimeCanceledMatch[2]) || 0)
+    overtimeFee = Math.max(0, Number.parseFloat(overtimeCanceledMatch[3]) || 0)
     overtimeFeeMinutes = Math.max(0, Number.parseInt(overtimeCanceledMatch[1], 10) || 0)
+    overtimePeopleCount = Math.max(1, Number.parseInt(overtimeCanceledMatch[2], 10) || 1)
   }
 
   const meituanPattern = /(^|[；;，,\s])美团客户[（(][^）)]*[）)]/g
@@ -542,8 +611,10 @@ function inferTimerNotesStateFromDescription(description = '') {
     notes,
     meituanCustomer,
     applyOvertimeFee,
+    hadOvertimeNote,
     overtimeFee,
     overtimeFeeMinutes,
+    overtimePeopleCount,
     overtimeRatePerMinute
   }
 }
@@ -617,7 +688,7 @@ function formatFilterDateLabel(value) {
 }
 
 function applyTimerConsumeForm(nextForm = {}) {
-  Object.assign(timerConsumeForm, createTimerConsumeForm('', billingRules.value), nextForm)
+  Object.assign(timerConsumeForm, createTimerConsumeForm('', billingRules.value, seatLayoutConfig.value), nextForm)
 }
 
 
@@ -777,7 +848,9 @@ async function fetchTransactions() {
     const params = {
       page: currentPage.value,
       page_size: pageSize.value,
+      status: isExpiredMode.value ? EXPIRED_TRANSACTION_STATUS : undefined,
       type: filterForm.type || undefined,
+      description: filterForm.descriptionKeyword.trim() || undefined,
       date_start: filterForm.startDate || undefined,
       date_end: filterForm.endDate || undefined
     }
@@ -803,7 +876,7 @@ async function fetchTransactions() {
     console.error('Failed to fetch transactions:', error)
     transactions.value = []
     total.value = 0
-    showFeedback('error', '获取交易记录失败，请稍后重试。')
+    showFeedback('error', pageFetchErrorText.value)
   } finally {
     loading.value = false
   }
@@ -854,6 +927,14 @@ async function fetchBillingRules() {
     syncAutoMiscSelections()
     syncTimerMiscSelections()
     syncTimerEditMiscSelections()
+  }
+}
+
+async function fetchSeatLayoutConfig() {
+  try {
+    await loadSeatLayoutConfig(true)
+  } catch (error) {
+    console.error('获取座位编号配置失败:', error)
   }
 }
 
@@ -920,10 +1001,11 @@ function applyRechargeActivityPreset(activityId) {
 }
 
 function resetConsumeForms(customerId = '') {
-  consumeMode.value = 'manual'
+  consumeMode.value = 'timer'
 
   manualConsumeForm.customerId = customerId
   manualConsumeForm.amount = ''
+  manualConsumeForm.peopleCount = 1
   manualConsumeForm.description = ''
   syncManualMiscSelections({})
   manualConsumeForm.meituanCustomer = false
@@ -942,7 +1024,7 @@ function resetConsumeForms(customerId = '') {
   autoConsumeForm.notes = ''
   autoConsumeForm.meituanCustomer = false
 
-  Object.assign(timerConsumeForm, createTimerConsumeForm(customerId, billingRules.value))
+  Object.assign(timerConsumeForm, createTimerConsumeForm(customerId, billingRules.value, seatLayoutConfig.value))
   syncTimerMiscSelections({})
 
   manualConsumeErrors.value = {}
@@ -954,6 +1036,7 @@ function resetTimerEditForm(transaction = null) {
   const description = stripMiscMarkerFromDescription(transaction?.description)
   const inferredBillingType = inferTimerBillingTypeFromDescription(description)
   const inferredElapsedMinutes = parseElapsedMinutesFromDescription(description)
+  const inferredTableLabel = extractTimerTableLabelFromDescription(description)
   const detailSection = parseTimerDetailSectionFromDescription(description)
   const inferredDuration = inferTimerDurationFromDescription(detailSection, inferredElapsedMinutes)
   const inferredOvertimeMinutes = inferTimerOvertimeMinutesFromDescription(
@@ -981,8 +1064,11 @@ function resetTimerEditForm(transaction = null) {
   timerEditForm.additionalFee = Math.max(0, Math.round(((inferredAdditionalFee - inferredOvertimeFee) + Number.EPSILON) * 100) / 100)
   timerEditForm.applyOvertimeFee = inferredNotesState.applyOvertimeFee
   timerEditForm.overtimeFeeMinutes = inferredNotesState.overtimeFeeMinutes
+  timerEditForm.overtimePeopleCount = inferredNotesState.overtimePeopleCount
   timerEditForm.notes = inferredNotesState.notes
   timerEditForm.meituanCustomer = inferredNotesState.meituanCustomer
+  timerEditTableLabel.value = inferredTableLabel
+  timerEditOriginalHadOvertimeNote.value = inferredNotesState.hadOvertimeNote
   timerEditStartTimestamp.value = resolveTimerEditStartTimestamp(transaction, timerEditForm.elapsedMinutes)
   syncTimerEditMiscSelections(transaction?.miscSelections || {})
   timerEditErrors.value = {}
@@ -1021,6 +1107,7 @@ async function handleReset() {
   filterForm.startDate = ''
   filterForm.endDate = ''
   filterForm.customerKeyword = ''
+  filterForm.descriptionKeyword = ''
   currentPage.value = 1
   await fetchTransactions()
 }
@@ -1088,7 +1175,9 @@ async function openConsumeDialog(customerId = '') {
   resetConsumeForms(validCustomerId)
   showConsumeDialog.value = true
   await nextTick()
-  manualConsumeCustomerSelectRef.value?.focus()
+  if (consumeMode.value === 'manual') {
+    manualConsumeCustomerSelectRef.value?.focus()
+  }
   await Promise.all([fetchBillingRules(), syncConsumeBalance(validCustomerId)])
 }
 
@@ -1138,6 +1227,10 @@ function validateManualConsumeForm() {
   if (manualRawTotal.value <= 0) {
     errors.amount = '请输入有效金额或杂项数量'
   }
+  const peopleCount = Number(manualConsumeForm.peopleCount)
+  if (!Number.isFinite(peopleCount) || peopleCount < 1 || !Number.isInteger(peopleCount)) {
+    errors.peopleCount = '请输入大于等于 1 的整数人数'
+  }
   if (!manualConsumeForm.description?.trim()) {
     errors.description = '请输入消费描述'
   }
@@ -1173,7 +1266,7 @@ function validateAutoConsumeForm() {
 }
 
 function validateTimerConsumeFormState() {
-  const { isValid, errors } = validateSharedTimerConsumeForm(timerConsumeForm, validCustomers.value, billingRules.value)
+  const { isValid, errors } = validateSharedTimerConsumeForm(timerConsumeForm, validCustomers.value, billingRules.value, seatLayoutConfig.value)
   const miscErrors = collectTimerMiscErrors(timerConsumeForm.miscSelections)
   if (miscErrors.length > 0) {
     errors.misc = miscErrors[0]
@@ -1210,10 +1303,21 @@ function validateTimerEditForm() {
 
   const normalizedOvertimeFeeMinutes = timerEditAutoOvertimeMinutes.value
   const normalizedOvertimeRate = timerEditOvertimeRatePerMinute.value
-  if (timerEditForm.applyOvertimeFee && normalizedOvertimeFeeMinutes > 0 && normalizedOvertimeRate > 0) {
-    notesParts.push(
-      `加班费用￥${formatAmount(timerEditOvertimeFee.value)}（${normalizedOvertimeFeeMinutes}分钟，￥${formatAmount(normalizedOvertimeRate)}/分钟）`
-    )
+  const normalizedOvertimePeopleCount = timerEditOvertimePeopleCount.value
+  if (normalizedOvertimeFeeMinutes > 0 && normalizedOvertimeRate > 0) {
+    if (timerEditForm.applyOvertimeFee) {
+      notesParts.push(
+        normalizedOvertimePeopleCount > 1
+          ? `加班费用￥${formatAmount(timerEditOvertimeFee.value)}（${normalizedOvertimeFeeMinutes}分钟，${normalizedOvertimePeopleCount}人，￥${formatAmount(normalizedOvertimeRate)}/人/分钟）`
+          : `加班费用￥${formatAmount(timerEditOvertimeFee.value)}（${normalizedOvertimeFeeMinutes}分钟，￥${formatAmount(normalizedOvertimeRate)}/分钟）`
+      )
+    } else if (timerEditOriginalHadOvertimeNote.value) {
+      notesParts.push(
+        normalizedOvertimePeopleCount > 1
+          ? `已取消加班费用（${normalizedOvertimeFeeMinutes}分钟，${normalizedOvertimePeopleCount}人，原￥${formatAmount(timerEditOvertimeFeeByRule.value)}）`
+          : `已取消加班费用（${normalizedOvertimeFeeMinutes}分钟，原￥${formatAmount(timerEditOvertimeFeeByRule.value)}）`
+      )
+    }
   }
 
   if (timerEditForm.meituanCustomer) {
@@ -1226,7 +1330,8 @@ function validateTimerEditForm() {
     {
       mode: 'timer',
       billingType: timerEditForm.billingType,
-      elapsedMinutes: Math.max(0, Math.floor(elapsedMinutes))
+      elapsedMinutes: Math.max(0, Math.floor(elapsedMinutes)),
+      tableLabel: timerEditTableLabel.value
     },
     timerEditPreview.value,
     notes
@@ -1288,6 +1393,7 @@ async function submitManualConsume() {
   if (!validateManualConsumeForm()) return
 
   const amount = manualFinalAmount.value
+  const peopleCount = Math.max(1, Math.floor(Number(manualConsumeForm.peopleCount) || 1))
   const miscSelections = createMiscSelectionMap(manualConsumeForm.miscSelections)
 
   const currentBalance = await fetchCustomerBalance(manualConsumeForm.customerId)
@@ -1300,7 +1406,10 @@ async function submitManualConsume() {
     return
   }
 
-  const noteParts = [String(manualConsumeForm.description || '').trim()]
+  const noteParts = [
+    String(manualConsumeForm.description || '').trim(),
+    `人数${peopleCount}人`
+  ]
   if (manualMiscSummary.value.details.length > 0) {
     noteParts.push(`杂项${manualMiscSummary.value.details.join('、')}`)
   }
@@ -1354,7 +1463,7 @@ async function submitAutoConsume() {
 async function submitTimerConsume() {
   if (!validateTimerConsumeFormState()) return
 
-  await api.post('/active-timers', buildTimerConsumeRequestPayload(timerConsumeForm, billingRules.value))
+  await api.post('/active-timers', buildTimerConsumeRequestPayload(timerConsumeForm, billingRules.value, seatLayoutConfig.value))
 }
 
 async function submitConsumeByMode() {
@@ -1519,17 +1628,26 @@ function isIncomeTransaction(type) {
   return type === 'recharge'
 }
 
+function getBalanceDeltaClass(balanceDelta) {
+  if (balanceDelta > 0) return 'text-emerald-600'
+  if (balanceDelta < 0) return 'text-amber-600'
+  return 'text-slate-400'
+}
+
+function formatSignedAmount(amount) {
+  const normalized = Number(amount) || 0
+  if (normalized > 0) return `+￥${formatAmount(normalized)}`
+  if (normalized < 0) return `-￥${formatAmount(Math.abs(normalized))}`
+  return '￥0.00'
+}
+
 function getTransactionAmountClass(type) {
   return isIncomeTransaction(type) ? 'text-emerald-600' : 'text-amber-600'
 }
 
-function getTransactionAmountPrefix(type) {
-  return isIncomeTransaction(type) ? '+' : '-'
-}
-
 function canCancelTransaction(transaction = {}) {
   const normalized = normalizeTransaction(transaction)
-  if (normalized.status === 'cancelled') return false
+  if (['cancelled', EXPIRED_TRANSACTION_STATUS].includes(String(normalized.status || '').trim().toLowerCase())) return false
   return normalized.type === 'recharge' || normalized.type === 'consumption' || normalized.type === 'expense' || normalized.type === 'bead_purchase'
 }
 
@@ -1537,7 +1655,8 @@ function getStatusLabel(status) {
   const statusMap = {
     completed: '已完成',
     pending: '待处理',
-    cancelled: '已撤销'
+    cancelled: '已撤销',
+    expired: '已过期'
   }
   return statusMap[status] || '已完成'
 }
@@ -1546,7 +1665,8 @@ function getStatusClass(status) {
   const classMap = {
     completed: 'bg-green-100 text-green-800',
     pending: 'bg-yellow-100 text-yellow-800',
-    cancelled: 'bg-red-100 text-red-800'
+    cancelled: 'bg-red-100 text-red-800',
+    expired: 'bg-violet-100 text-violet-800'
   }
   return classMap[status] || 'bg-green-100 text-green-800'
 }
@@ -1656,6 +1776,10 @@ async function handleRouteAction() {
   const action = String(route.query.action || '').toLowerCase()
   const customerId = route.query.customerId ? String(route.query.customerId) : ''
   if (!action) return
+  if (isExpiredMode.value) {
+    clearRouteActionQuery()
+    return
+  }
 
   if (action === 'recharge') {
     await openRechargeDialog(customerId)
@@ -1733,9 +1857,29 @@ watch(
   { immediate: true }
 )
 
+watch(
+  () => isExpiredMode.value,
+  async (nextValue, previousValue) => {
+    if (nextValue === previousValue) return
+    closeCancelConfirmDialog(true)
+    closeTimerEditDialog(true)
+    closeDetailDialog(true)
+    closeExpenseDialog(true)
+    closeConsumeDialog(true)
+    closeRechargeDialog(true)
+    filterForm.type = ''
+    filterForm.startDate = ''
+    filterForm.endDate = ''
+    filterForm.customerKeyword = ''
+    filterForm.descriptionKeyword = ''
+    currentPage.value = 1
+    await fetchTransactions()
+  }
+)
+
 onMounted(async () => {
   window.addEventListener('keydown', handleGlobalKeydown)
-  await Promise.all([fetchCustomers(), fetchActivities(), fetchBillingRules()])
+  await Promise.all([fetchCustomers(), fetchActivities(), fetchBillingRules(), fetchSeatLayoutConfig()])
   await fetchTransactions()
 })
 
@@ -1750,10 +1894,11 @@ onUnmounted(() => {
     <section class="page-hero rounded-3xl px-5 py-6 sm:px-7 sm:py-7">
       <div class="relative z-10 flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
         <div class="space-y-2 max-w-2xl">
-          <p class="page-hero__eyebrow">Transaction Workspace</p>
-          <h1 class="page-hero__title">交易记录</h1>
+          <p class="page-hero__eyebrow">{{ pageEyebrow }}</p>
+          <h1 class="page-hero__title">{{ pageTitle }}</h1>
+          <p class="page-hero__meta">{{ pageDescription }}</p>
         </div>
-        <div class="flex flex-wrap items-center gap-2 sm:gap-3">
+        <div v-if="!isExpiredMode" class="flex flex-wrap items-center gap-2 sm:gap-3">
           <button
             @click="openRechargeDialog"
             class="page-hero__action"
@@ -1796,8 +1941,15 @@ onUnmounted(() => {
       </div>
     </Transition>
 
+    <section
+      v-if="isExpiredMode"
+      class="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm text-violet-800"
+    >
+      这里仅显示重新结算后被新交易替换掉的旧记录，普通“交易记录”页面不会展示这些数据。
+    </section>
+
     <section class="rounded-2xl border border-slate-200/70 bg-white p-4 sm:p-6 shadow-sm">
-      <div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-[minmax(120px,0.75fr)_minmax(160px,1fr)_minmax(160px,1fr)_minmax(200px,1.2fr)_auto_auto] xl:items-end">
+      <div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-[minmax(120px,0.72fr)_minmax(150px,0.9fr)_minmax(150px,0.9fr)_minmax(180px,1fr)_minmax(240px,1.25fr)_auto_auto] xl:items-end">
         <div>
           <label class="block text-sm font-semibold text-slate-700 mb-1.5">交易类型</label>
           <select
@@ -1860,6 +2012,16 @@ onUnmounted(() => {
           />
         </div>
 
+        <div>
+          <label class="block text-sm font-semibold text-slate-700 mb-1.5">描述筛选</label>
+          <input
+            v-model="filterForm.descriptionKeyword"
+            type="text"
+            placeholder="描述关键词，支持模糊匹配"
+            class="w-full h-10 px-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          />
+        </div>
+
         <button
           @click="handleFilter"
           class="h-10 px-4 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors xl:justify-self-end"
@@ -1882,7 +2044,8 @@ onUnmounted(() => {
             <tr>
               <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">交易ID</th>
               <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">客户</th>
-              <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">金额</th>
+              <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">交易金额</th>
+              <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">余额变动</th>
               <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">赠送</th>
               <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">支付方式/描述</th>
               <th class="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">时间</th>
@@ -1893,19 +2056,19 @@ onUnmounted(() => {
           </thead>
           <tbody class="divide-y divide-slate-100">
             <tr v-if="loading">
-              <td colspan="9" class="px-6 py-14 text-center">
+              <td colspan="10" class="px-6 py-14 text-center">
                 <div class="flex items-center justify-center gap-2 text-blue-700">
                   <svg class="animate-spin h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                     <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                   </svg>
-                  <span class="text-sm font-medium">正在加载交易数据...</span>
+                  <span class="text-sm font-medium">{{ pageLoadingText }}</span>
                 </div>
               </td>
             </tr>
             <tr v-else-if="transactions.length === 0">
-              <td colspan="9" class="px-6 py-14 text-center text-slate-500">
-                暂无交易记录
+              <td colspan="10" class="px-6 py-14 text-center text-slate-500">
+                {{ pageEmptyText }}
               </td>
             </tr>
             <tr v-else v-for="transaction in transactions" :key="transaction.id" class="hover:bg-slate-50/75 transition-colors">
@@ -1923,7 +2086,17 @@ onUnmounted(() => {
                     getTransactionAmountClass(transaction.type)
                   ]"
                 >
-                  {{ getTransactionAmountPrefix(transaction.type) }}￥{{ formatAmount(transaction.amount) }}
+                  ￥{{ formatAmount(transaction.amount) }}
+                </span>
+              </td>
+              <td class="px-5 py-4 whitespace-nowrap">
+                <span
+                  :class="[
+                    'text-sm font-semibold',
+                    getBalanceDeltaClass(transaction.balanceDelta)
+                  ]"
+                >
+                  {{ formatSignedAmount(transaction.balanceDelta) }}
                 </span>
               </td>
               <td class="px-5 py-4 whitespace-nowrap text-sm text-slate-500">
@@ -1994,11 +2167,11 @@ onUnmounted(() => {
               <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
               <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
             </svg>
-            <span>正在加载交易数据...</span>
+            <span>{{ pageLoadingText }}</span>
           </div>
         </div>
         <div v-else-if="transactions.length === 0" class="rounded-xl border border-slate-200 bg-white p-6 text-center text-slate-500">
-          暂无交易记录
+          {{ pageEmptyText }}
         </div>
         <div v-else class="space-y-2.5">
           <article
@@ -2028,7 +2201,10 @@ onUnmounted(() => {
                     getTransactionAmountClass(transaction.type)
                   ]"
                 >
-                  {{ getTransactionAmountPrefix(transaction.type) }}￥{{ formatAmount(transaction.amount) }}
+                  ￥{{ formatAmount(transaction.amount) }}
+                </p>
+                <p :class="['text-xs font-medium', getBalanceDeltaClass(transaction.balanceDelta)]">
+                  余额变动：{{ formatSignedAmount(transaction.balanceDelta) }}
                 </p>
                 <p class="text-xs text-slate-500">
                   赠送：{{ transaction.bonusAmount > 0 ? `+￥${formatAmount(transaction.bonusAmount)}` : '-' }}
@@ -2414,6 +2590,24 @@ onUnmounted(() => {
               </div>
 
               <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">消费人数</label>
+                <input
+                  v-model.number="manualConsumeForm.peopleCount"
+                  type="number"
+                  min="1"
+                  step="1"
+                  placeholder="请输入人数"
+                  :class="[
+                    'w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
+                    manualConsumeErrors.peopleCount ? 'border-red-500' : 'border-gray-300'
+                  ]"
+                />
+                <p v-if="manualConsumeErrors.peopleCount" class="text-red-500 text-xs mt-1">
+                  {{ manualConsumeErrors.peopleCount }}
+                </p>
+              </div>
+
+              <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">描述</label>
                 <textarea
                   v-model="manualConsumeForm.description"
@@ -2443,7 +2637,7 @@ onUnmounted(() => {
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <div v-for="item in enabledMiscItems" :key="`manual-misc-${item.id}`">
                     <label class="block text-sm font-medium text-gray-700 mb-1">
-                      {{ item.name }}（¥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
+                      {{ item.name }}（￥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
                     </label>
                     <p class="text-xs text-slate-500 mb-1">可用库存：{{ formatMiscStock(item) }}</p>
                     <input
@@ -2614,7 +2808,7 @@ onUnmounted(() => {
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <div v-for="item in enabledMiscItems" :key="item.id">
                     <label class="block text-sm font-medium text-gray-700 mb-1">
-                      {{ item.name }}（¥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
+                      {{ item.name }}（￥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
                     </label>
                     <p class="text-xs text-slate-500 mb-1">可用库存：{{ formatMiscStock(item) }}</p>
                     <input
@@ -2677,6 +2871,7 @@ onUnmounted(() => {
                 :customer-options="validCustomers"
                 :enabled-misc-items="enabledMiscItems"
                 :billing-rules="billingRules"
+                :seat-layout-config="seatLayoutConfig"
                 @update:model-value="applyTimerConsumeForm"
               />
               <div v-if="enabledMiscItems.length > 0" class="mt-3 bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800">
@@ -2852,7 +3047,10 @@ onUnmounted(() => {
                 <p v-if="timerEditStartTimestamp !== null">预计结束：{{ timerEditEndTimeLabel }}</p>
                 <p v-if="timerEditStartTimestamp !== null">加班分钟（自动）：{{ timerEditAutoOvertimeMinutes }}</p>
                 <p v-else>未获取到计时开始时间，沿用历史加班分钟：{{ timerEditAutoOvertimeMinutes }}</p>
-                <p>加班单价：￥{{ formatAmount(timerEditOvertimeRatePerMinute) }}/分钟</p>
+                <p v-if="timerEditOvertimePeopleCount > 1">加班人数：{{ timerEditOvertimePeopleCount }}人</p>
+                <p>
+                  加班单价：￥{{ formatAmount(timerEditOvertimeRatePerMinute) }}{{ timerEditOvertimePeopleCount > 1 ? '/人/分钟' : '/分钟' }}
+                </p>
               </div>
 
               <p class="text-xs text-slate-600">
@@ -2874,7 +3072,7 @@ onUnmounted(() => {
               <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div v-for="item in enabledMiscItems" :key="`timer-edit-misc-${item.id}`">
                   <label class="block text-sm font-medium text-gray-700 mb-1">
-                    {{ item.name }}（¥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
+                    {{ item.name }}（￥{{ formatAmount(item.unit_price) }}/{{ item.unit_label || '个' }}）
                   </label>
                   <p class="text-xs text-slate-500 mb-1">可用库存：{{ formatMiscStock(item) }}</p>
                   <input
@@ -3000,14 +3198,20 @@ onUnmounted(() => {
                 <p class="text-gray-900">{{ getCustomerWechat(selectedTransaction) }}</p>
               </div>
               <div>
-                <label class="text-sm text-gray-500">金额</label>
+                <label class="text-sm text-gray-500">交易金额</label>
                 <p
                   :class="[
                     'font-medium',
                     getTransactionAmountClass(selectedTransaction.type)
                   ]"
                 >
-                  {{ getTransactionAmountPrefix(selectedTransaction.type) }}￥{{ formatAmount(selectedTransaction.amount) }}
+                  ￥{{ formatAmount(selectedTransaction.amount) }}
+                </p>
+              </div>
+              <div>
+                <label class="text-sm text-gray-500">余额变动</label>
+                <p :class="['font-medium', getBalanceDeltaClass(selectedTransaction.balanceDelta)]">
+                  {{ formatSignedAmount(selectedTransaction.balanceDelta) }}
                 </p>
               </div>
               <div>
@@ -3045,10 +3249,22 @@ onUnmounted(() => {
                   {{ getOperatorName(selectedTransaction) }}
                 </p>
               </div>
+              <div v-if="selectedTransaction.cancelledAt">
+                <label class="text-sm text-gray-500">{{ selectedTransaction.status === EXPIRED_TRANSACTION_STATUS ? '过期时间' : '撤销时间' }}</label>
+                <p class="text-gray-900">{{ formatDateTime(selectedTransaction.cancelledAt) }}</p>
+              </div>
+              <div v-if="selectedTransaction.cancelledBy">
+                <label class="text-sm text-gray-500">{{ selectedTransaction.status === EXPIRED_TRANSACTION_STATUS ? '归档操作员' : '撤销操作员' }}</label>
+                <p class="text-gray-900">{{ selectedTransaction.cancelledBy }}</p>
+              </div>
             </div>
             <div v-if="selectedTransaction.type !== 'recharge' && selectedTransaction.description">
               <label class="text-sm text-gray-500">描述</label>
               <p class="text-gray-900 mt-1">{{ selectedTransaction.description }}</p>
+            </div>
+            <div v-if="selectedTransaction.cancelReason">
+              <label class="text-sm text-gray-500">{{ selectedTransaction.status === EXPIRED_TRANSACTION_STATUS ? '过期原因' : '撤销原因' }}</label>
+              <p class="text-gray-900 mt-1">{{ selectedTransaction.cancelReason }}</p>
             </div>
             <div v-if="selectedTransaction.activity">
               <label class="text-sm text-gray-500">关联活动</label>

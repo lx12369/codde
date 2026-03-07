@@ -1,9 +1,7 @@
-﻿from datetime import date, datetime, timezone
-from decimal import Decimal
 from pathlib import Path
 
 from flask import Blueprint, g, request
-from sqlalchemy import Boolean, Date, DateTime, Float, Integer, Numeric
+from sqlalchemy import text
 
 from models.models import (
     db,
@@ -22,80 +20,32 @@ from models.models import (
     Log
 )
 from utils.audit_log import get_operator_name, write_log
+from utils.data_snapshot import BACKUP_SCHEMA_VERSION, export_snapshot_payload, restore_snapshot_payload
 from utils.decorators import token_required
-from utils.response import success_response, error_response
+from utils.roles import is_admin
+from utils.response import error_response, success_response
 
 data_bp = Blueprint('data', __name__)
 
-BACKUP_SCHEMA_VERSION = 4
 
-MODEL_REGISTRY = {
-    'users': User,
-    'revoked_tokens': RevokedToken,
-    'customers': Customer,
-    'balances': Balance,
-    'transactions': Transaction,
-    'activities': Activity,
-    'billing_rules': BillingRule,
-    'active_timers': ActiveTimer,
-    'bead_materials': BeadMaterial,
-    'bead_inventory_balances': BeadInventoryBalance,
-    'bead_inventory_ledgers': BeadInventoryLedger,
-    'bead_stocktakes': BeadStocktake,
-    'logs': Log
-}
+def _resolve_restore_schema_version(payload):
+    if not isinstance(payload, dict):
+        return BACKUP_SCHEMA_VERSION
 
-BACKUP_ORDER = [
-    'users',
-    'revoked_tokens',
-    'customers',
-    'balances',
-    'transactions',
-    'activities',
-    'billing_rules',
-    'active_timers',
-    'bead_materials',
-    'bead_inventory_balances',
-    'bead_inventory_ledgers',
-    'bead_stocktakes',
-    'logs'
-]
+    meta = payload.get('meta')
+    if isinstance(meta, dict) and meta.get('schema_version') is not None:
+        return meta.get('schema_version')
 
-RESTORE_INSERT_ORDER = [
-    'users',
-    'revoked_tokens',
-    'customers',
-    'activities',
-    'billing_rules',
-    'balances',
-    'transactions',
-    'active_timers',
-    'bead_materials',
-    'bead_inventory_balances',
-    'bead_inventory_ledgers',
-    'bead_stocktakes',
-    'logs'
-]
+    wrapped_data = payload.get('data')
+    if isinstance(wrapped_data, dict):
+        nested_meta = wrapped_data.get('meta')
+        if isinstance(nested_meta, dict) and nested_meta.get('schema_version') is not None:
+            return nested_meta.get('schema_version')
 
-RESTORE_DELETE_ORDER = [
-    'revoked_tokens',
-    'logs',
-    'bead_stocktakes',
-    'bead_inventory_ledgers',
-    'bead_inventory_balances',
-    'bead_materials',
-    'active_timers',
-    'transactions',
-    'balances',
-    'billing_rules',
-    'activities',
-    'customers',
-    'users'
-]
+    return BACKUP_SCHEMA_VERSION
 
 
 def _build_storage_info():
-    """Return concrete storage details for the currently configured database."""
     engine_url = db.engine.url
     engine_url_str = str(engine_url)
     backend_name = engine_url.get_backend_name()
@@ -117,6 +67,20 @@ def _build_storage_info():
                     data_size_bytes = db_path.stat().st_size
                 except OSError:
                     data_size_bytes = None
+    elif backend_name == 'mysql' and database:
+        storage_location = database
+        try:
+            result = db.session.execute(
+                text(
+                    'SELECT COALESCE(SUM(data_length + index_length), 0) '
+                    'FROM information_schema.tables '
+                    'WHERE table_schema = :database_name'
+                ),
+                {'database_name': database}
+            )
+            data_size_bytes = int(result.scalar() or 0)
+        except Exception:
+            data_size_bytes = None
     elif database:
         storage_location = database
     elif engine_url_str:
@@ -147,106 +111,6 @@ def _build_storage_info():
     }
 
 
-def _serialize_value(value):
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, date):
-        return value.isoformat()
-    if isinstance(value, Decimal):
-        return float(value)
-    return value
-
-
-def _serialize_row(model, row):
-    return {
-        column.name: _serialize_value(getattr(row, column.name))
-        for column in model.__table__.columns
-    }
-
-
-def _parse_datetime_value(value):
-    if value is None:
-        return None
-
-    if isinstance(value, datetime):
-        dt = value
-    else:
-        text = str(value).strip()
-        if not text:
-            return None
-        if text.endswith('Z'):
-            text = f'{text[:-1]}+00:00'
-        dt = datetime.fromisoformat(text)
-
-    if dt.tzinfo is not None:
-        return dt.astimezone(timezone.utc).replace(tzinfo=None)
-    return dt
-
-
-def _parse_date_value(value):
-    if value is None:
-        return None
-
-    if isinstance(value, date) and not isinstance(value, datetime):
-        return value
-
-    text = str(value).strip()
-    if not text:
-        return None
-
-    try:
-        return date.fromisoformat(text)
-    except ValueError:
-        dt = _parse_datetime_value(text)
-        return dt.date() if dt else None
-
-
-def _deserialize_value(column, value):
-    if value is None:
-        return None
-
-    column_type = column.type
-
-    if isinstance(column_type, DateTime):
-        return _parse_datetime_value(value)
-
-    if isinstance(column_type, Date):
-        return _parse_date_value(value)
-
-    if isinstance(column_type, Boolean):
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return value != 0
-        return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
-
-    if isinstance(column_type, Integer):
-        return int(value)
-
-    if isinstance(column_type, (Float, Numeric)):
-        return float(value)
-
-    return value
-
-
-def _extract_snapshot(payload):
-    if not isinstance(payload, dict):
-        return None
-
-    snapshot = payload.get('snapshot')
-    if isinstance(snapshot, dict):
-        return snapshot
-
-    # Backward compatible: old backups used flat structure.
-    return payload
-
-
-def _build_stats_template():
-    return {
-        key: 0 for key in BACKUP_ORDER
-    }
-
-
 def _require_admin():
     current_user_id = getattr(g, 'current_user_id', None)
     current_user = User.query.get(current_user_id) if current_user_id is not None else None
@@ -254,7 +118,7 @@ def _require_admin():
     if not current_user:
         return error_response('用户不存在或未登录', 401)
 
-    if str(current_user.role or '').strip().lower() != 'admin':
+    if not is_admin(current_user):
         return error_response('仅管理员可执行该操作', 403)
 
     return None
@@ -277,23 +141,7 @@ def backup_data():
     if permission_error:
         return permission_error
 
-    snapshot = {}
-    stats = _build_stats_template()
-
-    for key in BACKUP_ORDER:
-        model = MODEL_REGISTRY[key]
-        rows = model.query.all()
-        snapshot[key] = [_serialize_row(model, row) for row in rows]
-        stats[key] = len(rows)
-
-    backup_data_payload = {
-        'meta': {
-            'schema_version': BACKUP_SCHEMA_VERSION,
-            'exported_at': datetime.utcnow().isoformat(),
-            'engine': db.engine.url.get_backend_name()
-        },
-        'snapshot': snapshot
-    }
+    backup_data_payload, stats = export_snapshot_payload()
 
     operator = get_operator_name(default='unknown')
     write_log(
@@ -319,70 +167,24 @@ def restore_data():
         return permission_error
 
     payload = request.get_json()
-
     if not payload:
         return error_response('No data provided', 400)
 
-    snapshot = _extract_snapshot(payload)
-    if not isinstance(snapshot, dict):
-        return error_response('Invalid backup payload', 400)
-
-    has_users_snapshot = isinstance(snapshot.get('users'), list)
-
-    restore_delete_order = [
-        table_key for table_key in RESTORE_DELETE_ORDER
-        if has_users_snapshot or table_key != 'users'
-    ]
-    restore_insert_order = [
-        table_key for table_key in RESTORE_INSERT_ORDER
-        if has_users_snapshot or table_key != 'users'
-    ]
-
-    stats = _build_stats_template()
-
     try:
-        for table_key in restore_delete_order:
-            model = MODEL_REGISTRY[table_key]
-            model.query.delete()
-
-        db.session.flush()
-
-        for table_key in restore_insert_order:
-            records = snapshot.get(table_key, [])
-            if records is None:
-                records = []
-            if not isinstance(records, list):
-                return error_response(f'Invalid data for {table_key}', 400)
-
-            model = MODEL_REGISTRY[table_key]
-
-            for record in records:
-                if not isinstance(record, dict):
-                    return error_response(f'Invalid item in {table_key}', 400)
-
-                values = {}
-                for column in model.__table__.columns:
-                    if column.name not in record:
-                        continue
-                    values[column.name] = _deserialize_value(column, record.get(column.name))
-
-                db.session.add(model(**values))
-                stats[table_key] += 1
-
-        db.session.commit()
-
-        # Keep exact-restore semantics: do not append restore log into restored dataset.
+        stats = restore_snapshot_payload(payload)
         return success_response(
             {
-                'schema_version': payload.get('meta', {}).get('schema_version') if isinstance(payload.get('meta'), dict) else None,
+                'schema_version': _resolve_restore_schema_version(payload),
                 'restored': stats
             },
             'Data restored successfully'
         )
-
-    except Exception as e:
+    except ValueError as error:
         db.session.rollback()
-        return error_response(f'Restore failed: {str(e)}', 500)
+        return error_response(str(error), 400)
+    except Exception as error:
+        db.session.rollback()
+        return error_response(f'Restore failed: {str(error)}', 500)
 
 
 @data_bp.route('/clear', methods=['DELETE'])
@@ -435,9 +237,7 @@ def clear_data():
         )
 
         db.session.commit()
-
         return success_response(message='All data cleared successfully')
-
-    except Exception as e:
+    except Exception as error:
         db.session.rollback()
-        return error_response(f'Clear failed: {str(e)}', 500)
+        return error_response(f'Clear failed: {str(error)}', 500)

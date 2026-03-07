@@ -105,7 +105,13 @@ def get_customer(customer_id):
         return error_response('Customer not found', 404)
 
     customer_data = _customer_to_dict(customer)
-    transactions = Transaction.query.filter_by(customer_id=customer_id).order_by(Transaction.transaction_time.desc()).all()
+    transactions = (
+        Transaction.query
+        .filter_by(customer_id=customer_id)
+        .filter(db.or_(Transaction.status.is_(None), Transaction.status != 'expired'))
+        .order_by(Transaction.transaction_time.desc())
+        .all()
+    )
     customer_data['transactions'] = [transaction.to_dict() for transaction in transactions]
 
     return success_response(customer_data)

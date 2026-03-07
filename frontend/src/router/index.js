@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores'
+import { isAdminRole, isSuperAdminRole } from '@/utils/roles'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -37,7 +38,14 @@ const router = createRouter({
         {
           path: 'transactions',
           name: 'transactions',
-          component: () => import('@/views/Transactions.vue')
+          component: () => import('@/views/Transactions.vue'),
+          meta: { transactionScope: 'active' }
+        },
+        {
+          path: 'expired-transactions',
+          name: 'expired-transactions',
+          component: () => import('@/views/Transactions.vue'),
+          meta: { requiresSuperAdmin: true, transactionScope: 'expired' }
         },
         {
           path: 'activities',
@@ -74,7 +82,7 @@ const router = createRouter({
           path: 'system-logs',
           name: 'system-logs',
           component: () => import('@/views/SystemLogs.vue'),
-          meta: { requiresAdmin: true }
+          meta: { requiresSuperAdmin: true }
         }
       ]
     },
@@ -87,11 +95,18 @@ const router = createRouter({
 
 router.beforeEach((to, from, next) => {
   const authStore = useAuthStore()
-  const isAdmin = String(authStore.user?.role || '').toLowerCase() === 'admin'
+  const role = authStore.user?.role
+  const isAdmin = isAdminRole(role)
+  const isSuperAdmin = isSuperAdminRole(role)
 
   if (to.meta.requiresAuth && !authStore.isAuthenticated) {
     next({ name: 'login' })
   } else if (to.meta.guest && authStore.isAuthenticated) {
+    next({ name: 'dashboard' })
+  } else if (to.meta.requiresSuperAdmin && !isSuperAdmin) {
+    if (typeof window !== 'undefined') {
+      window.alert('当前账号无权访问该页面')
+    }
     next({ name: 'dashboard' })
   } else if (to.meta.requiresAdmin && !isAdmin) {
     if (typeof window !== 'undefined') {

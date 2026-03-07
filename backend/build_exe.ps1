@@ -18,6 +18,7 @@ Write-Host "3/3 打包 EXE..."
   --clean `
   --onefile `
   --name StudioSystem `
+  --hidden-import pymysql `
   desktop_main.py `
   --add-data "..\frontend\dist;web_dist" `
   --add-data ".\data;data"

@@ -283,8 +283,11 @@ def get_operator_name(default='system'):
         return default
 
     user = User.query.get(user_id)
-    if user and user.username:
-        return user.username
+    if user:
+        if user.username:
+            return user.username
+        if user.account:
+            return user.account
 
     return default
 
