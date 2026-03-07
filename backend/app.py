@@ -1,14 +1,23 @@
 from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_restful import Api
-from models import db, init_db
+
 from config import config
+from db_runtime import ensure_database_exists, get_sqlalchemy_engine_options
+from models import db, init_db
 
 
-def create_app(config_name='default'):
+def create_app(config_name='default', database_uri=None, init_database=True):
     app = Flask(__name__)
     app.config.from_object(config[config_name])
-    
+
+    resolved_database_uri = database_uri or app.config['SQLALCHEMY_DATABASE_URI']
+    app.config['SQLALCHEMY_DATABASE_URI'] = resolved_database_uri
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = get_sqlalchemy_engine_options(resolved_database_uri)
+
+    if init_database:
+        ensure_database_exists(resolved_database_uri)
+
     CORS(app, resources={
         r'/api/*': {
             'origins': '*',
@@ -16,17 +25,17 @@ def create_app(config_name='default'):
             'allow_headers': ['Content-Type', 'Authorization']
         }
     })
-    
+
     db.init_app(app)
-    
-    api = Api(app, prefix='/api')
-    
+
+    Api(app, prefix='/api')
+
     register_routes(app)
-    
     register_error_handlers(app)
-    
-    init_db(app)
-    
+
+    if init_database:
+        init_db(app)
+
     return app
 
 
@@ -42,7 +51,7 @@ def register_routes(app):
     from routes.data import data_bp
     from routes.logs import logs_bp
     from routes.bead_inventory import bead_inventory_bp
-    
+
     app.register_blueprint(auth_bp)
     app.register_blueprint(customers_bp, url_prefix='/api/customers')
     app.register_blueprint(employees_bp, url_prefix='/api/employees')
@@ -60,19 +69,19 @@ def register_error_handlers(app):
     @app.errorhandler(400)
     def bad_request(error):
         return jsonify({'error': '请求参数错误', 'message': str(error)}), 400
-    
+
     @app.errorhandler(401)
     def unauthorized(error):
         return jsonify({'error': '未授权访问', 'message': str(error)}), 401
-    
+
     @app.errorhandler(403)
     def forbidden(error):
         return jsonify({'error': '禁止访问', 'message': str(error)}), 403
-    
+
     @app.errorhandler(404)
     def not_found(error):
         return jsonify({'error': '资源不存在', 'message': str(error)}), 404
-    
+
     @app.errorhandler(500)
     def internal_server_error(error):
         return jsonify({'error': '服务器内部错误', 'message': str(error)}), 500
