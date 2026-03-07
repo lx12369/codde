@@ -180,6 +180,12 @@ def extract_snapshot(payload):
     if not isinstance(payload, dict):
         return None
 
+    wrapped_data = payload.get('data')
+    if isinstance(wrapped_data, dict):
+        nested_snapshot = wrapped_data.get('snapshot')
+        if isinstance(nested_snapshot, dict):
+            return nested_snapshot
+
     snapshot = payload.get('snapshot')
     if isinstance(snapshot, dict):
         return snapshot

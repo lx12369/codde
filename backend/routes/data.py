@@ -26,6 +26,23 @@ from utils.response import error_response, success_response
 data_bp = Blueprint('data', __name__)
 
 
+def _resolve_restore_schema_version(payload):
+    if not isinstance(payload, dict):
+        return BACKUP_SCHEMA_VERSION
+
+    meta = payload.get('meta')
+    if isinstance(meta, dict) and meta.get('schema_version') is not None:
+        return meta.get('schema_version')
+
+    wrapped_data = payload.get('data')
+    if isinstance(wrapped_data, dict):
+        nested_meta = wrapped_data.get('meta')
+        if isinstance(nested_meta, dict) and nested_meta.get('schema_version') is not None:
+            return nested_meta.get('schema_version')
+
+    return BACKUP_SCHEMA_VERSION
+
+
 def _build_storage_info():
     engine_url = db.engine.url
     engine_url_str = str(engine_url)
@@ -141,7 +158,7 @@ def restore_data():
         stats = restore_snapshot_payload(payload)
         return success_response(
             {
-                'schema_version': payload.get('meta', {}).get('schema_version') if isinstance(payload.get('meta'), dict) else BACKUP_SCHEMA_VERSION,
+                'schema_version': _resolve_restore_schema_version(payload),
                 'restored': stats
             },
             'Data restored successfully'
